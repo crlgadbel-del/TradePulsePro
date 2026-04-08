@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Antigravity TradeAI — Expert System</title>
+    <meta name="description" content="AI-powered expert trading system with profit/loss analysis, technical indicators, and intelligent trade recommendations for NSE stocks.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <script src="chart.js"></script>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <div class="brand-group">
+                <div class="brand">Antigravity TradeAI</div>
+                <div class="brand-tag">Expert System</div>
+            </div>
+            <div class="refresh-timer">
+                <span class="live-indicator"></span> Market Live <span id="clock">--:--</span>
+            </div>
+        </header>
+
+        <!-- Top Opportunities -->
+        <section>
+            <h2>Intraday Opportunities</h2>
+            <p style="color: var(--text-secondary); margin-bottom: 20px; font-size: 0.9rem;">
+                AI-driven analysis based on Momentum, RSI, and Volume spikes. Click any stock for <strong style="color:var(--accent-purple)">Expert Analysis</strong>.
+            </p>
+            <div id="predictions" class="predictions-grid">
+                <div class="loading">Analyzing Market Data...</div>
+            </div>
+        </section>
+
+        <!-- Watchlist Table -->
+        <section>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px;">
+                <h2>Live Watchlist</h2>
+            </div>
+            <div class="market-table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Price (INR)</th>
+                            <th>Change %</th>
+                            <th>30s</th>
+                            <th>1m</th>
+                            <th>2m</th>
+                            <th>1h</th>
+                            <th>2h</th>
+                            <th>Signal</th>
+                            <th>Score</th>
+                        </tr>
+                    </thead>
+                    <tbody id="market-table">
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- ══════════════ STOCK DETAIL MODAL ══════════════ -->
+        <div id="stock-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div>
+                        <h2 id="modal-title">STOCK NAME</h2>
+                        <div id="modal-price" class="stock-price-large">₹0.00</div>
+                    </div>
+                    <span class="close-modal" id="close-modal-btn">&times;</span>
+                </div>
+
+                <!-- AI Forecast Box -->
+                <div id="ai-forecast-container" class="ai-forecast" style="display: none;">
+                    <div>
+                        <div class="forecast-label">AI Forecast (5 min)</div>
+                        <div style="font-size: 0.8rem; color: var(--text-secondary);">Projected Price</div>
+                    </div>
+                    <div class="forecast-value" id="forecast-value">--</div>
+                </div>
+
+                <!-- ═══ EXPERT ANALYSIS PANEL ═══ -->
+                <div id="expert-panel" class="expert-panel">
+                    <div class="expert-header">
+                        <div class="expert-title-row">
+                            <div class="expert-icon">🧠</div>
+                            <div>
+                                <h3>Expert System Analysis</h3>
+                                <p class="expert-subtitle">Multi-indicator rule-based verdict with P/L projection</p>
+                            </div>
+                        </div>
+                        <div class="expert-input-row">
+                            <label for="investment-input">Investment (₹)</label>
+                            <input type="number" id="investment-input" value="10000" min="1000" step="1000">
+                            <button id="btn-run-expert" class="btn-expert">Run Analysis</button>
+                        </div>
+                    </div>
+
+                    <div id="expert-loading" class="expert-loading" style="display:none;">
+                        <div class="spinner"></div>
+                        <span>Running expert rules engine...</span>
+                    </div>
+
+                    <div id="expert-results" style="display:none;">
+                        <!-- Verdict Banner -->
+                        <div id="expert-verdict-banner" class="verdict-banner">
+                            <div class="verdict-left">
+                                <div class="verdict-label">EXPERT VERDICT</div>
+                                <div id="verdict-text" class="verdict-text">—</div>
+                            </div>
+                            <div class="verdict-right">
+                                <div class="confidence-ring" id="confidence-ring">
+                                    <svg viewBox="0 0 80 80">
+                                        <circle class="ring-bg" cx="40" cy="40" r="34"/>
+                                        <circle class="ring-fill" id="confidence-arc" cx="40" cy="40" r="34"/>
+                                    </svg>
+                                    <div class="confidence-val" id="confidence-val">0%</div>
+                                </div>
+                                <div class="confidence-label">Confidence</div>
+                            </div>
+                        </div>
+
+                        <!-- Profit / Loss Scenarios -->
+                        <div id="pl-section" class="pl-section">
+                            <h4 class="section-title">💰 Profit / Loss Projection</h4>
+                            <div class="pl-meta" id="pl-meta"></div>
+                            <div class="pl-scenarios" id="pl-scenarios"></div>
+                            <div class="pl-risk" id="pl-risk"></div>
+                            <div class="pl-recommendation" id="pl-recommendation"></div>
+                        </div>
+
+                        <!-- Technical Indicators Grid -->
+                        <div class="indicators-section">
+                            <h4 class="section-title">📊 Technical Indicators</h4>
+                            <div class="indicators-grid" id="indicators-grid"></div>
+                        </div>
+
+                        <!-- Expert Rules Fired -->
+                        <div class="rules-section">
+                            <h4 class="section-title">⚙️ Expert Rules Fired</h4>
+                            <div class="rules-list" id="rules-list"></div>
+                            <div class="score-bar-container" id="score-bar-container"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- History Log -->
+                <div id="history-container">
+                    <div class="history-header">
+                        <span>Time</span>
+                        <span>Price</span>
+                    </div>
+                    <div id="history-log" class="history-log"></div>
+                </div>
+
+                <!-- Prediction Settings -->
+                <div class="prediction-settings">
+                    <h3>Prediction Base (Select History)</h3>
+                    <div class="history-controls">
+                        <label><input type="checkbox" value="1h" class="hist-check"> 1 Hr</label>
+                        <label><input type="checkbox" value="2h" class="hist-check"> 2 Hr</label>
+                        <label><input type="checkbox" value="3h" class="hist-check"> 3 Hr</label>
+                        <label><input type="checkbox" value="4h" class="hist-check"> 4 Hr</label>
+                        <label><input type="checkbox" value="1d" class="hist-check"> 1 Day</label>
+                        <label><input type="checkbox" value="2d" class="hist-check"> 2 Days</label>
+                        <label><input type="checkbox" value="3d" class="hist-check"> 3 Days</label>
+                        <label><input type="checkbox" value="1wk" class="hist-check"> 1 Week</label>
+                        <button id="btn-predict" class="btn-primary">Predict Trajectory</button>
+                    </div>
+                </div>
+
+                <!-- Trajectory Results -->
+                <div id="trajectory-container" style="display:none; margin-bottom: 25px;">
+                    <div class="history-header" style="background: rgba(41, 121, 255, 0.1); color: var(--accent-blue);">
+                        <span>Future Time</span>
+                        <span>Predicted Price</span>
+                        <span>Context</span>
+                    </div>
+                    <div id="trajectory-log" class="history-log"></div>
+                </div>
+
+                <!-- Short/Long Term Cards -->
+                <div class="timeframe-section">
+                    <h3>Short Term (Minutes)</h3>
+                    <div class="cards-scroller">
+                        <div id="pred-1m" class="trade-card"></div>
+                        <div id="pred-2m" class="trade-card"></div>
+                        <div id="pred-3m" class="trade-card"></div>
+                        <div id="pred-4m" class="trade-card"></div>
+                        <div id="pred-5m" class="trade-card"></div>
+                    </div>
+                </div>
+
+                <div class="timeframe-section">
+                    <h3>Long Term (Hours)</h3>
+                    <div class="cards-scroller">
+                        <div id="pred-1h" class="trade-card"></div>
+                        <div id="pred-2h" class="trade-card"></div>
+                        <div id="pred-3h" class="trade-card"></div>
+                        <div id="pred-4h" class="trade-card"></div>
+                        <div id="pred-5h" class="trade-card"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <p class="footer-note">
+            ⚠️ Disclaimer: This tool is for educational purposes only. Market data may be delayed.
+            Algorithm generates signals based on technical indicators and does not guarantee profit.
+            Trade at your own risk.
+        </p>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
