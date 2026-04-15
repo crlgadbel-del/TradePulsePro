@@ -53,6 +53,8 @@ document.addEventListener('DOMContentLoaded', () => {
     setupSearch();
     initTradingViewTicker();
     loadMarketStatus();
+    fetchIndexData();
+    setInterval(fetchIndexData, 10000);
     document.addEventListener('keydown', e => { if (e.key === 'Escape') closeChartModal(); });
 });
 
@@ -78,6 +80,27 @@ function updateTime() {
 }
 
 // ==================== SEARCH ====================
+
+// Local stock list for instant search (populated from config)
+const ALL_LOCAL_SYMBOLS = [];
+function populateLocalSymbols() {
+    // These will be populated from the API on load
+    fetch(`${API_BASE}/api/symbols?market=all`).then(r => r.json()).then(data => {
+        ALL_LOCAL_SYMBOLS.length = 0;
+        (data.indian || []).forEach(s => ALL_LOCAL_SYMBOLS.push({ symbol: s.symbol, name: s.name, type: 'Indian' }));
+        (data.us || []).forEach(s => ALL_LOCAL_SYMBOLS.push({ symbol: s.symbol, name: s.name, type: 'US' }));
+        (data.crypto || []).forEach(s => ALL_LOCAL_SYMBOLS.push({ symbol: s.symbol, name: s.name, type: 'Crypto' }));
+    }).catch(() => {});
+}
+
+function localSearch(query) {
+    const q = query.toUpperCase();
+    return ALL_LOCAL_SYMBOLS.filter(s =>
+        s.symbol.toUpperCase().includes(q) ||
+        (s.name && s.name.toUpperCase().includes(q))
+    ).slice(0, 10);
+}
+
 function getRecentSearches() {
     try { return JSON.parse(localStorage.getItem('tradePulseRecent')) || []; }
     catch(e) { return []; }
@@ -90,10 +113,32 @@ function saveRecentSearch(symbol) {
     localStorage.setItem('tradePulseRecent', JSON.stringify(recent));
 }
 
+function renderSearchResults(items, container) {
+    if (items.length > 0) {
+        container.innerHTML = items.map(item => {
+            const displaySymbol = item.symbol.startsWith('^') ? item.symbol.substring(1) : item.symbol;
+            return `
+                <div class="search-result-item" onclick="handleSearchSelect('${item.symbol}')">
+                    <span class="symbol">${displaySymbol}</span>
+                    <span class="name">${item.name || ''}</span>
+                    ${item.type ? `<span class="search-type-badge">${item.type}</span>` : ''}
+                </div>
+            `;
+        }).join('');
+        container.classList.add('active');
+    } else {
+        container.classList.remove('active');
+    }
+}
+
 function setupSearch() {
     const input = document.getElementById('searchInput');
     const results = document.getElementById('searchResults');
     let debounceTimer;
+    let lastServerResults = [];
+
+    // Pre-populate local symbols
+    populateLocalSymbols();
 
     const showRecent = () => {
         const recent = getRecentSearches();
@@ -118,24 +163,48 @@ function setupSearch() {
         clearTimeout(debounceTimer);
         const q = input.value.trim();
         if (q.length === 0) { showRecent(); return; }
-        if (q.length < 2) { results.classList.remove('active'); return; }
-        debounceTimer = setTimeout(async () => {
-            try {
-                const res = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(q)}`);
-                const data = await res.json();
-                if (data.length > 0) {
-                    results.innerHTML = data.slice(0, 8).map(item => `
-                        <div class="search-result-item" onclick="handleSearchSelect('${item.symbol}')">
-                            <span class="symbol">${item.symbol}</span>
-                            <span class="name">${item.name || ''}</span>
-                        </div>
-                    `).join('');
-                    results.classList.add('active');
-                } else {
-                    results.classList.remove('active');
+        if (q.length < 1) { results.classList.remove('active'); return; }
+
+        // Instant local results first
+        const localResults = localSearch(q);
+        if (localResults.length > 0) {
+            renderSearchResults(localResults, results);
+        }
+
+        // Then augment with server results (debounced)
+        if (q.length >= 2) {
+            debounceTimer = setTimeout(async () => {
+                try {
+                    const res = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(q)}`);
+                    const data = await res.json();
+                    lastServerResults = data;
+                    // Merge: local first, then server results not already in local
+                    const localSymbols = new Set(localResults.map(l => l.symbol));
+                    const serverNew = data.filter(s => !localSymbols.has(s.symbol));
+                    const merged = [...localResults, ...serverNew].slice(0, 12);
+                    renderSearchResults(merged, results);
+                } catch (e) {
+                    // Keep local results visible
                 }
-            } catch (e) { results.classList.remove('active'); }
-        }, 300);
+            }, 400);
+        }
+    });
+
+    // Enter key to open first result or search directly
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            const q = input.value.trim();
+            if (!q) return;
+            // Check if there's a visible result to select
+            const firstItem = results.querySelector('.search-result-item');
+            if (firstItem) {
+                firstItem.click();
+            } else {
+                // Direct open: try as-is, with .NS, or with -USD
+                handleSearchSelect(q.toUpperCase());
+            }
+        }
     });
 
     input.addEventListener('blur', () => setTimeout(() => results.classList.remove('active'), 200));
@@ -146,6 +215,19 @@ function handleSearchSelect(symbol) {
     document.getElementById('searchInput').value = '';
     document.getElementById('searchResults').classList.remove('active');
     openChartModal(symbol);
+}
+
+function triggerSearch() {
+    const input = document.getElementById('searchInput');
+    const results = document.getElementById('searchResults');
+    const q = input.value.trim();
+    if (!q) { input.focus(); return; }
+    const firstItem = results.querySelector('.search-result-item');
+    if (firstItem) {
+        firstItem.click();
+    } else {
+        handleSearchSelect(q.toUpperCase());
+    }
 }
 
 // ==================== RISK / MARKET ====================
@@ -231,6 +313,10 @@ const LOGO_DOMAINS = {
 };
 
 function getLogoUrl(symbol) {
+    if (symbol === '^NSEI' || symbol === '^BSESN') {
+        // Return a generic index icon or use a specific one if available
+        return `https://cdn-icons-png.flaticon.com/512/2620/2620581.png`; // Stock chart icon
+    }
     if (symbol.includes('-USD')) {
         const coin = symbol.replace('-USD', '').toLowerCase();
         return `https://assets.coincap.io/assets/icons/${coin}@2x.png`;
@@ -265,7 +351,7 @@ function renderStockTable(stocks) {
                         <img src="${logo}" class="stock-logo" onerror="handleLogoError(this)">
                         <div class="symbol-avatar" style="display:none;">${s.symbol[0]}</div>
                     </div>
-                    <div class="symbol-ticker">${s.symbol}</div>
+                    <div class="symbol-ticker">${s.symbol.startsWith('^') ? s.symbol.substring(1) : s.symbol}</div>
                 </div>
             </td>
             <td><div class="symbol-name">${s.name || '—'}</div></td>
@@ -640,11 +726,15 @@ async function openChartModal(symbol) {
     const logo = getLogoUrl(symbol);
     avatar.innerHTML = `
         <img src="${logo}" class="stock-logo-lg" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-        <div class="symbol-avatar-lg" style="display:none;">${symbol[0]}</div>
+        <div class="symbol-avatar-lg" style="display:none;">${symbol.startsWith('^') ? symbol[1] : symbol[0]}</div>
     `;
 
-    document.getElementById('chartSymbolName').textContent = symbol.split('.')[0];
-    document.getElementById('chartSymbolTag').textContent = symbol;
+    let displayName = symbol.split('.')[0];
+    if (symbol === '^NSEI') displayName = 'NIFTY 50';
+    if (symbol === '^BSESN') displayName = 'SENSEX';
+
+    document.getElementById('chartSymbolName').textContent = displayName;
+    document.getElementById('chartSymbolTag').textContent = symbol.startsWith('^') ? symbol.substring(1) : symbol;
 
     document.getElementById('chartSignalLoading').style.display = 'flex';
     document.getElementById('chartSignalContent').style.display = 'none';
@@ -923,6 +1013,51 @@ function formatSeconds(s) {
     const mins = Math.floor((s % 3600) / 60).toString().padStart(2, '0');
     const secs = (s % 60).toString().padStart(2, '0');
     return `${hrs}:${mins}:${secs}`;
+}
+
+// ==================== LIVE INDEX DATA (Nifty / Sensex) ====================
+async function fetchIndexData() {
+    // Fetch Nifty 50
+    try {
+        const niftyRes = await fetch(`${API_BASE}/api/realtime/${encodeURIComponent('^NSEI')}`);
+        const nifty = await niftyRes.json();
+        if (nifty.price) updateIndexBlock('nifty', nifty);
+    } catch(e) { console.error('Nifty fetch error', e); }
+
+    // Fetch Sensex
+    try {
+        const sensexRes = await fetch(`${API_BASE}/api/realtime/${encodeURIComponent('^BSESN')}`);
+        const sensex = await sensexRes.json();
+        if (sensex.price) updateIndexBlock('sensex', sensex);
+    } catch(e) { console.error('Sensex fetch error', e); }
+}
+
+function updateIndexBlock(id, data) {
+    const valueEl = document.getElementById(`${id}Value`);
+    const changeEl = document.getElementById(`${id}Change`);
+    const absEl = document.getElementById(`${id}ChangeAbs`);
+    const pctEl = document.getElementById(`${id}ChangePct`);
+    if (!valueEl) return;
+
+    const price = parseFloat(data.price);
+    const change = parseFloat(data.change);
+    const changePct = parseFloat(data.change_pct);
+    const isUp = change >= 0;
+
+    valueEl.textContent = price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    absEl.textContent = (isUp ? '+' : '') + change.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    pctEl.textContent = (isUp ? '▲ ' : '▼ ') + Math.abs(changePct).toFixed(2) + '%';
+
+    // Set direction class
+    changeEl.className = 'index-change ' + (isUp ? 'up' : 'down');
+
+    // Flash animation on update
+    valueEl.style.transition = 'none';
+    valueEl.style.color = isUp ? 'var(--green-light)' : 'var(--red-light)';
+    setTimeout(() => {
+        valueEl.style.transition = 'color 1s ease';
+        valueEl.style.color = 'var(--text-primary)';
+    }, 400);
 }
 
 // ==================== TV TICKER ====================

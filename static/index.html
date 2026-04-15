@@ -37,9 +37,18 @@
             </a>
             <div class="search-container">
                 <div class="search-input-wrapper">
+                    <svg class="search-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
                     <input type="text" class="search-input" id="searchInput"
                            placeholder="Search stock or crypto (RELIANCE, AAPL, BTC)..."
                            autocomplete="off">
+                    <button class="search-submit-btn" id="searchSubmitBtn" onclick="triggerSearch()" title="Search">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+                            <polyline points="9 18 15 12 9 6"></polyline>
+                        </svg>
+                    </button>
                 </div>
                 <div class="search-results" id="searchResults"></div>
             </div>
@@ -50,11 +59,33 @@
         </div>
     </header>
 
-    <main class="main-container">
-        <!-- Ticker Tape (Nifty50/Sensex/Global) -->
-        <div class="tradingview-widget-container" style="margin-bottom: 24px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border);">
-            <div class="tradingview-widget-container__widget" id="tvTickerTape"></div>
+    <!-- Sticky Index Bar (Nifty50 & Sensex + Ticker Tape) -->
+    <div class="ticker-tape-sticky">
+        <div class="index-bar">
+            <div class="index-block clickable" id="indexBlockNifty" onclick="openChartModal('^NSEI')">
+                <div class="index-label">NIFTY 50</div>
+                <div class="index-value" id="niftyValue">—</div>
+                <div class="index-change" id="niftyChange">
+                    <span class="index-change-abs" id="niftyChangeAbs">—</span>
+                    <span class="index-change-pct" id="niftyChangePct">—</span>
+                </div>
+            </div>
+            <div class="index-block clickable" id="indexBlockSensex" onclick="openChartModal('^BSESN')">
+                <div class="index-label">SENSEX</div>
+                <div class="index-value" id="sensexValue">—</div>
+                <div class="index-change" id="sensexChange">
+                    <span class="index-change-abs" id="sensexChangeAbs">—</span>
+                    <span class="index-change-pct" id="sensexChangePct">—</span>
+                </div>
+            </div>
+            <div class="index-separator"></div>
+            <div class="tradingview-widget-container" style="flex:1; min-width:0;">
+                <div class="tradingview-widget-container__widget" id="tvTickerTape"></div>
+            </div>
         </div>
+    </div>
+
+    <main class="main-container">
 
         <!-- Market Status & Timer Banner -->
         <div id="holidayBanner" class="market-timer-banner" style="display:none; margin-bottom: 24px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: var(--radius-md); padding: 16px; text-align: center; color: var(--red);">

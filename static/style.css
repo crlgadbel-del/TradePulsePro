@@ -235,7 +235,7 @@ body {
 
 .search-input {
     width: 100%;
-    padding: 10px 16px 10px 44px;
+    padding: 10px 42px 10px 40px;
     background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: var(--radius-full);
@@ -244,6 +244,44 @@ body {
     font-family: inherit;
     transition: var(--transition);
     outline: none;
+}
+
+.search-icon-svg {
+    position: absolute;
+    left: 14px;
+    width: 18px;
+    height: 18px;
+    color: var(--text-muted);
+    pointer-events: none;
+    z-index: 1;
+}
+
+.search-submit-btn {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 50%;
+    background: var(--gradient-main);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: var(--transition);
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+}
+
+.search-submit-btn:hover {
+    transform: translateY(-50%) scale(1.1);
+    box-shadow: 0 4px 16px rgba(99, 102, 241, 0.5);
+}
+
+.search-submit-btn:active {
+    transform: translateY(-50%) scale(0.95);
 }
 
 .search-input:focus {
@@ -305,6 +343,19 @@ body {
     font-size: 0.85rem;
 }
 
+.search-type-badge {
+    margin-left: auto;
+    font-size: 0.65rem;
+    padding: 2px 8px;
+    border-radius: var(--radius-full);
+    background: rgba(99, 102, 241, 0.15);
+    color: var(--accent-primary);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+}
+
 .header-status {
     display: flex;
     align-items: center;
@@ -354,6 +405,111 @@ body {
     max-width: 1800px;
     margin: 0 auto;
     padding: 24px;
+}
+
+/* ===== STICKY INDEX BAR (Nifty / Sensex + Ticker Tape) ===== */
+.ticker-tape-sticky {
+    position: sticky;
+    top: 64px;
+    z-index: 99;
+    background: rgba(10, 14, 23, 0.95);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border);
+}
+
+.index-bar {
+    max-width: 1800px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 0;
+    padding: 0 16px;
+    min-height: 52px;
+}
+
+.index-block {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 18px;
+    border-right: 1px solid var(--border);
+    flex-shrink: 0;
+    cursor: default;
+    transition: background 0.2s ease;
+}
+
+.index-block:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.index-label {
+    font-size: 0.72rem;
+    font-weight: 800;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    white-space: nowrap;
+}
+
+.index-value {
+    font-size: 1.05rem;
+    font-weight: 800;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+.index-change {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.index-change-abs {
+    font-size: 0.8rem;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    white-space: nowrap;
+}
+
+.index-change-pct {
+    font-size: 0.72rem;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 1px 7px;
+    border-radius: var(--radius-full);
+    white-space: nowrap;
+}
+
+/* Green variant */
+.index-change.up .index-change-abs {
+    color: var(--green);
+}
+.index-change.up .index-change-pct {
+    color: var(--green);
+    background: rgba(16, 185, 129, 0.12);
+}
+
+/* Red variant */
+.index-change.down .index-change-abs {
+    color: var(--red);
+}
+.index-change.down .index-change-pct {
+    color: var(--red);
+    background: rgba(239, 68, 68, 0.12);
+}
+
+.index-separator {
+    width: 1px;
+    height: 32px;
+    background: var(--border);
+    flex-shrink: 0;
+    margin: 0 4px;
+}
+
+.ticker-tape-sticky .tradingview-widget-container__widget {
+    min-height: 46px;
 }
 
 /* ===== RISK LEVEL SELECTOR ===== */

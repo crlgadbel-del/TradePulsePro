@@ -163,44 +163,79 @@ def get_daily_data(symbol, period='3mo'):
 
 
 def search_symbol(query):
-    """Search for stock/crypto symbols"""
+    """Search for stock/crypto symbols — fast local match first, then yfinance fallback"""
+    from config import INDIAN_STOCKS, US_STOCKS, CRYPTO_PAIRS
+
+    results = []
+    q = query.upper().strip()
+    if not q:
+        return results
+
+    # 1. Fast local search across all configured lists
+    for symbol in INDIAN_STOCKS:
+        clean = symbol.replace('.NS', '').replace('.BO', '')
+        if q in symbol.upper() or q in clean.upper():
+            results.append({
+                'symbol': symbol,
+                'name': clean,
+                'type': 'indian_stock'
+            })
+    for symbol in US_STOCKS:
+        if q in symbol.upper():
+            results.append({
+                'symbol': symbol,
+                'name': symbol,
+                'type': 'us_stock'
+            })
+    for symbol in CRYPTO_PAIRS:
+        clean = symbol.replace('-USD', '')
+        if q in symbol.upper() or q in clean.upper():
+            results.append({
+                'symbol': symbol,
+                'name': clean,
+                'type': 'crypto'
+            })
+
+    # If we found local matches, return them immediately (fast path)
+    if results:
+        return results[:12]
+
+    # 2. Slow fallback: try yfinance for unknown symbols
     try:
-        results = []
         # Try direct ticker lookup
-        ticker = yf.Ticker(query.upper())
+        ticker = yf.Ticker(q)
         info = ticker.info
         if info and info.get('shortName'):
             results.append({
-                'symbol': query.upper(),
-                'name': info.get('shortName', query),
+                'symbol': q,
+                'name': info.get('shortName', q),
                 'type': 'stock'
             })
-        
+
         # Try with .NS suffix for Indian stocks
-        ticker_ns = yf.Ticker(f"{query.upper()}.NS")
+        ticker_ns = yf.Ticker(f"{q}.NS")
         info_ns = ticker_ns.info
         if info_ns and info_ns.get('shortName'):
             results.append({
-                'symbol': f"{query.upper()}.NS",
-                'name': info_ns.get('shortName', query),
+                'symbol': f"{q}.NS",
+                'name': info_ns.get('shortName', q),
                 'type': 'indian_stock'
             })
-        
+
         # Try with -USD suffix for crypto
-        ticker_crypto = yf.Ticker(f"{query.upper()}-USD")
+        ticker_crypto = yf.Ticker(f"{q}-USD")
         info_crypto = ticker_crypto.info
         if info_crypto and info_crypto.get('shortName'):
             results.append({
-                'symbol': f"{query.upper()}-USD",
-                'name': info_crypto.get('shortName', query),
+                'symbol': f"{q}-USD",
+                'name': info_crypto.get('shortName', q),
                 'type': 'crypto'
             })
-        
-        return results
-        
+
     except Exception as e:
         logger.error(f"Error searching for {query}: {e}")
-        return []
+
+    return results
 
 
 def get_market_status():
