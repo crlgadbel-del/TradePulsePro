@@ -226,6 +226,7 @@ def analyze_market(data, tickers):
             
             timeframes = {
                 "1m": 1, "2m": 2, "3m": 3, "4m": 4, "5m": 5,
+                "15m": 15,
                 "1h": 60, "2h": 120, "3h": 180, "4h": 240, "5h": 300
             }
             

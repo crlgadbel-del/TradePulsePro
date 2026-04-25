@@ -17,6 +17,11 @@ const state = {
     candleSeries: null,
     currentView: 'dashboard',
     watchlistData: [],
+    marketTimerInterval: null,
+    expertTimeframes: [],
+    selectedExpertTimeframe: '5m',
+    expertAnalysisData: null,
+    dashboardFocusSymbol: null,
 };
 
 const API_BASE = '';
@@ -27,6 +32,7 @@ function checkAuth() {
     const overlay = document.getElementById('loginOverlay');
     if (isAuth === 'true') {
         if (overlay) overlay.style.display = 'none';
+        if (document.getElementById('view-expert')) switchView('expert');
     } else {
         if (overlay) overlay.style.display = 'flex';
     }
@@ -85,19 +91,21 @@ function updateTime() {
 const ALL_LOCAL_SYMBOLS = [];
 function populateLocalSymbols() {
     // These will be populated from the API on load
-    fetch(`${API_BASE}/api/symbols?market=all`).then(r => r.json()).then(data => {
+    fetch(`${API_BASE}/api/symbols?market=indian`).then(r => r.json()).then(data => {
         ALL_LOCAL_SYMBOLS.length = 0;
         (data.indian || []).forEach(s => ALL_LOCAL_SYMBOLS.push({ symbol: s.symbol, name: s.name, type: 'Indian' }));
-        (data.us || []).forEach(s => ALL_LOCAL_SYMBOLS.push({ symbol: s.symbol, name: s.name, type: 'US' }));
-        (data.crypto || []).forEach(s => ALL_LOCAL_SYMBOLS.push({ symbol: s.symbol, name: s.name, type: 'Crypto' }));
     }).catch(() => {});
 }
 
 function localSearch(query) {
+    const normalizeSearch = value => (value || '').toUpperCase().replace(/&/g, 'AND').replace(/AND/g, '').replace(/[^A-Z0-9]/g, '');
     const q = query.toUpperCase();
+    const normalized = normalizeSearch(query);
     return ALL_LOCAL_SYMBOLS.filter(s =>
         s.symbol.toUpperCase().includes(q) ||
-        (s.name && s.name.toUpperCase().includes(q))
+        (s.name && s.name.toUpperCase().includes(q)) ||
+        (normalized && normalizeSearch(s.symbol).includes(normalized)) ||
+        (normalized && normalizeSearch(s.name).includes(normalized))
     ).slice(0, 10);
 }
 
@@ -117,11 +125,20 @@ function renderSearchResults(items, container) {
     if (items.length > 0) {
         container.innerHTML = items.map(item => {
             const displaySymbol = item.symbol.startsWith('^') ? item.symbol.substring(1) : item.symbol;
+            const displayName = item.name || displaySymbol;
+            const logo = item.logo_url || getLogoUrl(item.symbol);
+            const exchange = item.exchange || item.type || '';
             return `
-                <div class="search-result-item" onclick="handleSearchSelect('${item.symbol}')">
-                    <span class="symbol">${displaySymbol}</span>
-                    <span class="name">${item.name || ''}</span>
-                    ${item.type ? `<span class="search-type-badge">${item.type}</span>` : ''}
+                <div class="search-result-item" onclick="handleSearchSelect('${escapeJsString(item.symbol)}')">
+                    <div class="search-logo-wrapper">
+                        <img src="${escapeHtml(logo)}" class="search-stock-logo" onerror="handleLogoError(this)">
+                        <div class="search-logo-fallback" style="display:none;">${escapeHtml(displaySymbol[0] || '?')}</div>
+                    </div>
+                    <div class="search-result-main">
+                        <span class="name">${escapeHtml(displayName)}</span>
+                        <span class="symbol">${escapeHtml(displaySymbol)}${exchange ? ` · ${escapeHtml(exchange)}` : ''}</span>
+                    </div>
+                    ${item.type ? `<span class="search-type-badge">${escapeHtml(item.type)}</span>` : ''}
                 </div>
             `;
         }).join('');
@@ -144,11 +161,22 @@ function setupSearch() {
         const recent = getRecentSearches();
         if (recent.length > 0) {
             results.innerHTML = `<div style="padding: 8px 12px; font-size:0.75rem; color:var(--text-muted); font-weight:bold; letter-spacing:1px; text-transform:uppercase;">Recent Searches</div>` +
-                recent.map(sym => `
-                <div class="search-result-item" onclick="handleSearchSelect('${sym}')">
-                    <span class="symbol">${sym}</span>
+                recent.map(sym => {
+                    const found = ALL_LOCAL_SYMBOLS.find(s => s.symbol === sym);
+                    const logo = getLogoUrl(sym);
+                    return `
+                <div class="search-result-item" onclick="handleSearchSelect('${escapeJsString(sym)}')">
+                    <div class="search-logo-wrapper">
+                        <img src="${escapeHtml(logo)}" class="search-stock-logo" onerror="handleLogoError(this)">
+                        <div class="search-logo-fallback" style="display:none;">${escapeHtml(sym[0] || '?')}</div>
+                    </div>
+                    <div class="search-result-main">
+                        <span class="name">${escapeHtml(found?.name || sym)}</span>
+                        <span class="symbol">${escapeHtml(sym)}</span>
+                    </div>
                 </div>
-            `).join('');
+            `;
+                }).join('');
             results.classList.add('active');
         } else {
             results.classList.remove('active');
@@ -214,7 +242,7 @@ function handleSearchSelect(symbol) {
     saveRecentSearch(symbol);
     document.getElementById('searchInput').value = '';
     document.getElementById('searchResults').classList.remove('active');
-    openChartModal(symbol);
+    openDashboardForSymbol(symbol);
 }
 
 function triggerSearch() {
@@ -228,6 +256,13 @@ function triggerSearch() {
     } else {
         handleSearchSelect(q.toUpperCase());
     }
+}
+
+function normalizeDashboardSymbol(symbol) {
+    const value = String(symbol || '').trim().toUpperCase();
+    if (!value) return '';
+    if (value.startsWith('^') || value.endsWith('.NS') || value.endsWith('.BO') || value.endsWith('-USD')) return value;
+    return `${value}.NS`;
 }
 
 // ==================== RISK / MARKET ====================
@@ -244,7 +279,7 @@ async function setMarket(market) {
         t.classList.remove('active');
         if (t.id === `tab-${market}`) t.classList.add('active');
     });
-    const titleMap = { 'indian': 'All Indian Stocks', 'us': 'All US Stocks', 'crypto': 'Cryptocurrencies' };
+    const titleMap = { 'indian': 'All Indian Stocks' };
     document.getElementById('listingTitle').textContent = titleMap[market] || 'Stocks';
     loadDashboard();
 }
@@ -278,8 +313,12 @@ async function scanMarket() {
     try {
         const res = await fetch(`${API_BASE}/api/scan?market=${state.market}&risk=${state.riskLevel}`);
         const data = await res.json();
-        renderStockTable(data.signals || []);
-        updateOverallStats(data.signals || []);
+        const signals = data.signals || [];
+        renderStockTable(signals);
+        updateOverallStats(signals);
+        if (state.dashboardFocusSymbol && !signals.some(s => s.symbol === state.dashboardFocusSymbol)) {
+            loadDashboardFocusSignal(state.dashboardFocusSymbol);
+        }
     } catch (e) { console.error(e); }
 
     btn.innerHTML = `<span>🔄</span> Scan Market`;
@@ -289,14 +328,84 @@ async function scanMarket() {
 function updateOverallStats(signals) {
     let b = 0, s = 0, h = 0;
     signals.forEach(sig => {
-        if (sig.signal === 'BUY') b++;
-        else if (sig.signal === 'SELL') s++;
+        const signal = (sig.signal || '').toUpperCase();
+        if (signal.includes('BUY')) b++;
+        else if (signal.includes('SELL')) s++;
         else h++;
     });
     document.getElementById('statBuy').textContent = b;
     document.getElementById('statSell').textContent = s;
     document.getElementById('statHold').textContent = h;
     document.getElementById('statScanned').textContent = signals.length;
+}
+
+async function openDashboardForSymbol(symbol) {
+    closeChartModal();
+    state.dashboardFocusSymbol = normalizeDashboardSymbol(symbol);
+    switchView('dashboard');
+
+    const wrapper = document.getElementById('stockListingWrapper');
+    if (wrapper) wrapper.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    await loadDashboardFocusSignal(symbol);
+}
+
+async function loadDashboardFocusSignal(symbol) {
+    const tableBody = document.getElementById('stockTableBody');
+    if (!tableBody) return;
+
+    const loadingRow = document.createElement('tr');
+    loadingRow.className = 'dashboard-focus-loading';
+    loadingRow.innerHTML = `<td colspan="10" style="text-align:center;padding:18px;color:var(--text-muted);">Loading selected stock analysis...</td>`;
+    tableBody.prepend(loadingRow);
+
+    try {
+        const res = await fetch(`${API_BASE}/api/signal/${encodeURIComponent(symbol)}?risk=${state.riskLevel}`);
+        const sig = await res.json();
+        loadingRow.remove();
+
+        if (sig.error) {
+            tableBody.insertAdjacentHTML('afterbegin', `<tr><td colspan="10" style="text-align:center;color:var(--red);padding:18px;">${escapeHtml(sig.error)}</td></tr>`);
+            return;
+        }
+
+        const rowData = signalToDashboardRow(sig, symbol);
+        state.dashboardFocusSymbol = rowData.symbol;
+        upsertDashboardFocusRow(rowData);
+    } catch (e) {
+        loadingRow.remove();
+        tableBody.insertAdjacentHTML('afterbegin', `<tr><td colspan="10" style="text-align:center;color:var(--red);padding:18px;">Failed to load selected stock.</td></tr>`);
+    }
+}
+
+function signalToDashboardRow(sig, fallbackSymbol) {
+    return {
+        symbol: sig.symbol || normalizeDashboardSymbol(fallbackSymbol),
+        name: sig.name || sig.symbol || fallbackSymbol,
+        price: sig.price ?? sig.current_price ?? 0,
+        change: sig.change ?? 0,
+        change_pct: sig.change_pct ?? sig.day_change ?? 0,
+        signal: sig.signal || 'HOLD',
+        confidence: sig.confidence ?? 0,
+        entry_price: sig.entry_price ?? sig.entry ?? sig.current_price ?? 0,
+        target_price: sig.target_price ?? sig.target ?? sig.current_price ?? 0,
+        stop_loss: sig.stop_loss ?? sig.current_price ?? 0,
+        expected_profit_pct: sig.expected_profit_pct ?? 0,
+    };
+}
+
+function upsertDashboardFocusRow(stock) {
+    const tableBody = document.getElementById('stockTableBody');
+    const existing = Array.from(tableBody.querySelectorAll('tr[data-symbol]'))
+        .find(row => row.dataset.symbol === stock.symbol);
+    if (existing) existing.remove();
+
+    const currentRows = Array.from(tableBody.querySelectorAll('tr[data-symbol]')).map(row => row.__stockData).filter(Boolean);
+    renderStockTable([stock, ...currentRows]);
+
+    const focusRow = Array.from(tableBody.querySelectorAll('tr[data-symbol]'))
+        .find(row => row.dataset.symbol === stock.symbol);
+    if (focusRow) focusRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 // ==================== LOGO MAPPING ====================
@@ -306,10 +415,7 @@ const LOGO_DOMAINS = {
     'ITC.NS':'itcportal.com','KOTAKBANK.NS':'kotak.com','LT.NS':'larsentoubro.com','AXISBANK.NS':'axisbank.com',
     'BAJFINANCE.NS':'bajajfinserv.in','ASIANPAINT.NS':'asianpaints.com','MARUTI.NS':'marutisuzuki.com',
     'TITAN.NS':'titancompany.in','SUNPHARMA.NS':'sunpharma.com','TATAMOTORS.NS':'tatamotors.com',
-    'WIPRO.NS':'wipro.com','HCLTECH.NS':'hcltech.com','ADANIENT.NS':'adani.com',
-    'AAPL':'apple.com','MSFT':'microsoft.com','GOOGL':'google.com','AMZN':'amazon.com','NVDA':'nvidia.com',
-    'META':'meta.com','TSLA':'tesla.com','JPM':'jpmorganchase.com','V':'visa.com',
-    'AMD':'amd.com','NFLX':'netflix.com','DIS':'disney.com','UBER':'uber.com',
+    'WIPRO.NS':'wipro.com','HCLTECH.NS':'hcltech.com','ADANIENT.NS':'adani.com'
 };
 
 function getLogoUrl(symbol) {
@@ -330,6 +436,28 @@ function handleLogoError(img) {
     if (img.nextElementSibling) img.nextElementSibling.style.display = 'flex';
 }
 
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+    }[ch]));
+}
+
+function escapeJsString(value) {
+    return String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function getSignalClass(signal) {
+    const value = (signal || 'HOLD').toUpperCase();
+    if (value.includes('BUY')) return 'buy';
+    if (value.includes('SELL')) return 'sell';
+    if (value.includes('HOLD') || value.includes('NEUTRAL') || value.includes('WAIT')) return 'hold';
+    return 'pending';
+}
+
 // ==================== STOCK TABLE ====================
 function renderStockTable(stocks) {
     const tableBody = document.getElementById('stockTableBody');
@@ -338,10 +466,15 @@ function renderStockTable(stocks) {
 
     stocks.forEach(s => {
         const row = document.createElement('tr');
+        row.dataset.symbol = s.symbol;
+        row.__stockData = s;
+        if (state.dashboardFocusSymbol === s.symbol) {
+            row.classList.add('dashboard-focus-row');
+        }
         const price = s.price ? `${sym}${fmtNum(s.price)}` : '—';
         const changePct = s.change_pct !== undefined ? `${s.change_pct.toFixed(2)}%` : '—';
         const changeCls = s.change >= 0 ? 'green' : (s.change < 0 ? 'red' : '');
-        const signalCls = (s.signal || 'HOLD').toLowerCase();
+        const signalCls = getSignalClass(s.signal);
         const logo = getLogoUrl(s.symbol);
 
         row.innerHTML = `
@@ -402,7 +535,7 @@ async function loadQuickPicks() {
 }
 
 function renderQuickPickCard(stock) {
-    const typeClass = stock.signal.includes('BUY') ? 'buy' : (stock.signal.includes('SELL') ? 'sell' : 'neutral');
+    const typeClass = getSignalClass(stock.signal);
     const symbolClean = stock.symbol.replace('.NS', '');
     const sym = getCurrencySymbol();
     return `
@@ -418,9 +551,10 @@ function renderQuickPickCard(stock) {
     `;
 }
 
-function openExpertForSymbol(symbol) {
+function openExpertForSymbol(symbol, preferredInterval = state.selectedExpertTimeframe || '5m') {
     closeChartModal();
     switchView('expert');
+    state.selectedExpertTimeframe = preferredInterval;
     const clean = symbol.replace('.NS', '').replace('.BO', '').replace('-USD', '');
     document.getElementById('expertSymbolInput').value = clean;
     runExpertAnalysis();
@@ -441,7 +575,8 @@ async function runExpertAnalysis() {
     results.style.display = 'none';
 
     try {
-        const res = await fetch(`${API_BASE}/api/expert-analysis/${encodeURIComponent(symbolRaw)}?investment=${investment}`);
+        const interval = state.selectedExpertTimeframe || '5m';
+        const res = await fetch(`${API_BASE}/api/expert-analysis/${encodeURIComponent(symbolRaw)}?investment=${investment}&interval=${encodeURIComponent(interval)}`);
         const data = await res.json();
 
         loading.style.display = 'none';
@@ -465,99 +600,27 @@ async function runExpertAnalysis() {
 }
 
 function renderExpertHTML(data) {
-    const v = data.expert_verdict || {};
-    const pl = data.profit_loss || {};
-    const ind = data.indicators || {};
     const sym = getCurrencySymbol();
+    state.expertAnalysisData = data;
 
-    const verdictColor = v.verdict?.includes('BUY') ? 'buy' : (v.verdict?.includes('SELL') ? 'sell' : 'hold');
-
-    // Verdict Banner
-    let html = `
-        <div class="expert-verdict-banner ${verdictColor}-verdict">
-            <div class="verdict-left">
-                <div class="verdict-label">EXPERT VERDICT</div>
-                <div class="verdict-text ${verdictColor}-color">${v.verdict || 'HOLD'}</div>
-                <div class="verdict-meta">
-                    <span>Price: ${sym}${data.current_price || 0}</span>
-                    <span>Day: ${data.day_change > 0 ? '+' : ''}${data.day_change || 0}%</span>
-                </div>
-            </div>
-            <div class="verdict-right">
-                <div class="confidence-ring" id="confidenceRing">
-                    <svg viewBox="0 0 80 80">
-                        <circle class="ring-bg" cx="40" cy="40" r="34"/>
-                        <circle class="ring-fill" id="confidenceArc" cx="40" cy="40" r="34"/>
-                    </svg>
-                    <div class="confidence-val" id="confidenceVal">${v.confidence || 0}%</div>
-                </div>
-                <div class="confidence-label">Confidence</div>
-            </div>
-        </div>
-    `;
-
-    // P/L Section
-    if (pl && pl.direction !== 'NONE') {
-        const dirIcon = pl.direction === 'LONG' ? '📈' : '📉';
-        const dirColor = pl.direction === 'LONG' ? 'var(--green)' : 'var(--red)';
-
-        html += `
-            <div class="expert-section">
-                <h4 class="expert-section-title">💰 Profit / Loss Projection</h4>
-                <div class="pl-meta-grid">
-                    <div class="pl-meta-card"><div class="pl-meta-label">Direction</div><div class="pl-meta-value" style="color:${dirColor}">${dirIcon} ${pl.direction}</div></div>
-                    <div class="pl-meta-card"><div class="pl-meta-label">Entry</div><div class="pl-meta-value">${sym}${pl.entry}</div></div>
-                    <div class="pl-meta-card"><div class="pl-meta-label">Shares</div><div class="pl-meta-value">${pl.shares}</div></div>
-                    <div class="pl-meta-card"><div class="pl-meta-label">Investment</div><div class="pl-meta-value">${sym}${(pl.investment || 0).toLocaleString()}</div></div>
-                    <div class="pl-meta-card"><div class="pl-meta-label">Stop Loss</div><div class="pl-meta-value" style="color:var(--red)">${sym}${pl.stop_loss}</div></div>
-                </div>
-        `;
-
-        if (pl.scenarios && pl.scenarios.length > 0) {
-            html += `<div class="pl-scenarios-grid">`;
-            pl.scenarios.forEach(s => {
-                const isProfit = s.profit >= 0;
-                html += `
-                    <div class="scenario-card" style="border-left: 3px solid ${s.color || (isProfit ? 'var(--green)' : 'var(--red)')}">
-                        <div class="scenario-label" style="color:${s.color}">${s.label}</div>
-                        <div class="scenario-target">Target: ${sym}${s.target}</div>
-                        <div class="scenario-profit" style="color:${isProfit ? 'var(--green)' : 'var(--red)'}">
-                            ${isProfit ? '+' : ''}${sym}${Math.abs(s.profit).toLocaleString()}
-                        </div>
-                        <div class="scenario-pct" style="color:${s.color}">${isProfit ? '+' : ''}${s.profit_pct}%</div>
-                    </div>
-                `;
-            });
-            html += `</div>`;
-        }
-
-        // Risk
-        html += `
-            <div class="pl-risk-row">
-                <div class="risk-mini-card">
-                    <span class="risk-mini-icon">🛡️</span>
-                    <div>
-                        <div class="risk-mini-label">Max Loss</div>
-                        <div class="risk-mini-value" style="color:var(--red)">-${sym}${Math.abs(pl.max_loss || 0).toLocaleString()} (${pl.max_loss_pct || 0}%)</div>
-                    </div>
-                </div>
-                <div class="risk-mini-card">
-                    <span class="risk-mini-icon">⚖️</span>
-                    <div>
-                        <div class="risk-mini-label">Risk : Reward</div>
-                        <div class="risk-mini-value" style="color:${pl.risk_reward >= 1.5 ? 'var(--green)' : 'var(--red)'}">1 : ${pl.risk_reward}</div>
-                    </div>
-                </div>
-            </div>
-        `;
-
-        if (pl.recommendation) {
-            html += `<div class="pl-recommendation">📋 ${pl.recommendation}</div>`;
-        }
-        html += `</div>`;
+    const timeframes = data.timeframes || [];
+    if (timeframes.length > 0) {
+        state.expertTimeframes = timeframes;
+        const preferred = data.requested_interval || state.selectedExpertTimeframe || data.primary_interval || '5m';
+        state.selectedExpertTimeframe = timeframes.some(tf => tf.interval === preferred)
+            ? preferred
+            : (timeframes.some(tf => tf.interval === data.primary_interval) ? data.primary_interval : timeframes[0].interval);
     } else {
-        html += `<div class="expert-section"><div class="pl-recommendation">⏸️ No trade recommended. Wait for clearer signals.</div></div>`;
+        state.expertTimeframes = [];
+        state.selectedExpertTimeframe = data.primary_interval || '5m';
     }
+
+    const selectedAnalysis = getProjectionForInterval(state.selectedExpertTimeframe);
+    const v = selectedAnalysis.expert_verdict || data.expert_verdict || {};
+    const ind = selectedAnalysis.indicators || data.indicators || {};
+    let html = `<div id="expertVerdictMount">${renderVerdictBanner(selectedAnalysis)}</div>`;
+
+    html += renderProjectionSection(data);
 
     // Technical Indicators
     const indItems = [
@@ -573,6 +636,11 @@ function renderExpertHTML(data) {
         { name: 'Stoch %K', value: ind.stochastic_k, color: ind.stochastic_k < 20 ? 'var(--green)' : (ind.stochastic_k > 80 ? 'var(--red)' : 'var(--text-primary)') },
         { name: 'Support', value: `${sym}${ind.support}`, color: 'var(--green)' },
         { name: 'Resistance', value: `${sym}${ind.resistance}`, color: 'var(--red)' },
+        { name: 'Trend Sup', value: ind.trend_support ? `${sym}${ind.trend_support}` : '—', color: 'var(--green)' },
+        { name: 'Trend Res', value: ind.trend_resistance ? `${sym}${ind.trend_resistance}` : '—', color: 'var(--red)' },
+        { name: 'Fib 38.2', value: ind.fib_382 ? `${sym}${ind.fib_382}` : '—', color: 'var(--blue)' },
+        { name: 'Fib 61.8', value: ind.fib_618 ? `${sym}${ind.fib_618}` : '—', color: 'var(--yellow)' },
+        { name: 'Volatility', value: ind.volatility_pct != null ? `${ind.volatility_pct}%` : '—', color: ind.risk_state === 'High' ? 'var(--red)' : 'var(--text-primary)' },
     ];
 
     html += `
@@ -624,7 +692,71 @@ function renderExpertHTML(data) {
         `;
     }
 
+    const brain = data.analysis_brain || {};
+    const advanced = brain.advanced_patterns || {};
+    const riskReturn = brain.risk_return || {};
+    if ((advanced.active && advanced.active.length > 0) || riskReturn.risk_state) {
+        html += `
+            <div class="expert-section brain-section">
+                <h4 class="expert-section-title">Advanced Analysis Brain</h4>
+                <div class="brain-grid">
+                    <div class="brain-card">
+                        <div class="brain-label">Pattern Read</div>
+                        <div class="brain-value">${advanced.active && advanced.active.length ? advanced.active.join(', ') : 'No fresh advanced pattern'}</div>
+                    </div>
+                    <div class="brain-card">
+                        <div class="brain-label">Risk State</div>
+                        <div class="brain-value">${riskReturn.risk_state || 'Normal'} · Vol ${riskReturn.volatility_pct || 0}%</div>
+                    </div>
+                    <div class="brain-card">
+                        <div class="brain-label">Risk / Return</div>
+                        <div class="brain-value">CV ${riskReturn.coefficient_of_variation || 0} · Avg ${riskReturn.mean_return_pct || 0}%</div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
     return html;
+}
+
+function getVerdictForAnalysis(analysis) {
+    const verdict = analysis?.expert_verdict || {};
+    return {
+        verdict: verdict.verdict || analysis?.verdict || 'HOLD',
+        confidence: verdict.confidence ?? analysis?.confidence ?? 0,
+        current_price: analysis?.current_price ?? state.expertAnalysisData?.current_price ?? 0,
+        day_change: analysis?.day_change ?? state.expertAnalysisData?.day_change ?? 0,
+    };
+}
+
+function renderVerdictBanner(analysis) {
+    const sym = getCurrencySymbol();
+    const verdict = getVerdictForAnalysis(analysis);
+    const verdictColor = verdict.verdict.includes('BUY') ? 'buy' : (verdict.verdict.includes('SELL') ? 'sell' : 'hold');
+
+    return `
+        <div class="expert-verdict-banner ${verdictColor}-verdict">
+            <div class="verdict-left">
+                <div class="verdict-label">${analysis?.interval || state.selectedExpertTimeframe || '5m'} EXPERT VERDICT</div>
+                <div class="verdict-text ${verdictColor}-color">${verdict.verdict}</div>
+                <div class="verdict-meta">
+                    <span>Price: ${sym}${fmtNum(verdict.current_price)}</span>
+                    <span>Day: ${verdict.day_change > 0 ? '+' : ''}${verdict.day_change || 0}%</span>
+                </div>
+            </div>
+            <div class="verdict-right">
+                <div class="confidence-ring" id="confidenceRing">
+                    <svg viewBox="0 0 80 80">
+                        <circle class="ring-bg" cx="40" cy="40" r="34"/>
+                        <circle class="ring-fill" id="confidenceArc" cx="40" cy="40" r="34"/>
+                    </svg>
+                    <div class="confidence-val" id="confidenceVal">${verdict.confidence}%</div>
+                </div>
+                <div class="confidence-label">Confidence</div>
+            </div>
+        </div>
+    `;
 }
 
 function animateConfidenceRing(confidence) {
@@ -642,6 +774,165 @@ function animateConfidenceRing(confidence) {
         else if (verdict?.classList.contains('sell-verdict')) arc.style.stroke = 'var(--red)';
         else arc.style.stroke = 'var(--yellow)';
     }, 100);
+}
+
+function getProjectionForInterval(interval) {
+    const data = state.expertAnalysisData || {};
+    const match = (state.expertTimeframes || []).find(tf => tf.interval === interval);
+    if (match) return match;
+
+    return {
+        interval: data.primary_interval || interval || '5m',
+        verdict: data.expert_verdict?.verdict || 'HOLD',
+        confidence: data.expert_verdict?.confidence || 0,
+        current_price: data.current_price || 0,
+        profit_loss: data.profit_loss || {},
+    };
+}
+
+function renderProjectionSection(data) {
+    const timeframes = data.timeframes || [];
+    const selected = getProjectionForInterval(state.selectedExpertTimeframe);
+    const tabs = timeframes.length > 0 ? `
+        <div class="expert-tf-tabs projection-tabs" role="tablist" aria-label="Profit projection timeframes">
+            ${timeframes.map(tf => `
+                <button
+                    class="expert-tf-btn ${tf.interval === state.selectedExpertTimeframe ? 'active' : ''}"
+                    data-interval="${tf.interval}"
+                    onclick="setExpertTimeframe('${tf.interval}')"
+                    type="button"
+                >
+                    ${tf.interval}
+                </button>
+            `).join('')}
+        </div>
+    ` : '';
+
+    return `
+        <div class="expert-section" id="plProjectionSection">
+            <div class="projection-section-header">
+                <h4 class="expert-section-title">Profit / Loss Projection</h4>
+                ${renderProjectionPill(selected)}
+            </div>
+            ${tabs}
+            <div id="plProjectionContent">${renderProjectionCards(selected)}</div>
+        </div>
+    `;
+}
+
+function renderProjectionPill(projection) {
+    const cls = getSignalClass(projection?.verdict || 'HOLD');
+    return `<span id="projectionVerdictPill" class="consensus-pill ${cls}">${projection?.interval || '5m'} · ${projection?.verdict || 'HOLD'} · ${projection?.confidence || 0}%</span>`;
+}
+
+function normalizeProjectionPl(projection) {
+    const pl = projection?.profit_loss || {};
+    if (pl.direction) return pl;
+
+    const profitPct = projection?.profit_pct || 0;
+    const isProfit = profitPct >= 0;
+    return {
+        direction: projection?.direction || 'NONE',
+        entry: projection?.entry || projection?.current_price || 0,
+        shares: '—',
+        investment: 0,
+        stop_loss: projection?.stop_loss || 0,
+        scenarios: projection?.target ? [{
+            label: 'Target',
+            target: projection.target,
+            profit: 0,
+            profit_pct: profitPct,
+            color: isProfit ? 'var(--green)' : 'var(--red)',
+        }] : [],
+        max_loss: 0,
+        max_loss_pct: 0,
+        risk_reward: projection?.risk_reward || 0,
+        recommendation: '',
+    };
+}
+
+function renderProjectionCards(projection) {
+    if (!projection) return '';
+    const sym = getCurrencySymbol();
+    const pl = normalizeProjectionPl(projection);
+
+    if (!pl || pl.direction === 'NONE') {
+        return `<div class="pl-recommendation">No trade recommended for ${projection?.interval || 'this timeframe'}. Wait for clearer signals.</div>`;
+    }
+
+    const dirText = pl.direction === 'LONG' ? 'Long' : 'Short';
+    const dirColor = pl.direction === 'LONG' ? 'var(--green)' : 'var(--red)';
+    let html = `
+        <div class="pl-meta-grid">
+            <div class="pl-meta-card"><div class="pl-meta-label">Direction</div><div class="pl-meta-value" style="color:${dirColor}">${dirText}</div></div>
+            <div class="pl-meta-card"><div class="pl-meta-label">Entry</div><div class="pl-meta-value">${sym}${fmtNum(pl.entry)}</div></div>
+            <div class="pl-meta-card"><div class="pl-meta-label">Shares</div><div class="pl-meta-value">${pl.shares}</div></div>
+            <div class="pl-meta-card"><div class="pl-meta-label">Investment</div><div class="pl-meta-value">${pl.investment ? sym + fmtNum(pl.investment) : '—'}</div></div>
+            <div class="pl-meta-card"><div class="pl-meta-label">Stop Loss</div><div class="pl-meta-value" style="color:var(--red)">${sym}${fmtNum(pl.stop_loss)}</div></div>
+        </div>
+    `;
+
+    if (pl.scenarios && pl.scenarios.length > 0) {
+        html += `<div class="pl-scenarios-grid">`;
+        pl.scenarios.forEach(s => {
+            const isProfit = (s.profit ?? 0) >= 0;
+            const color = s.color || (isProfit ? 'var(--green)' : 'var(--red)');
+            html += `
+                <div class="scenario-card" style="border-left: 3px solid ${color}">
+                    <div class="scenario-label" style="color:${color}">${s.label}</div>
+                    <div class="scenario-target">Target: ${sym}${fmtNum(s.target)}</div>
+                    <div class="scenario-profit" style="color:${isProfit ? 'var(--green)' : 'var(--red)'}">
+                        ${isProfit ? '+' : '-'}${sym}${Math.abs(s.profit || 0).toLocaleString('en-IN')}
+                    </div>
+                    <div class="scenario-pct" style="color:${color}">${isProfit ? '+' : ''}${s.profit_pct || 0}%</div>
+                </div>
+            `;
+        });
+        html += `</div>`;
+    }
+
+    html += `
+        <div class="pl-risk-row">
+            <div class="risk-mini-card">
+                <div>
+                    <div class="risk-mini-label">Max Loss</div>
+                    <div class="risk-mini-value" style="color:var(--red)">-${sym}${Math.abs(pl.max_loss || 0).toLocaleString('en-IN')} (${pl.max_loss_pct || 0}%)</div>
+                </div>
+            </div>
+            <div class="risk-mini-card">
+                <div>
+                    <div class="risk-mini-label">Risk : Reward</div>
+                    <div class="risk-mini-value" style="color:${pl.risk_reward >= 1.5 ? 'var(--green)' : 'var(--red)'}">1 : ${pl.risk_reward || 0}</div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    if (pl.recommendation) {
+        html += `<div class="pl-recommendation">${pl.recommendation}</div>`;
+    }
+
+    return html;
+}
+
+function setExpertTimeframe(interval) {
+    state.selectedExpertTimeframe = interval;
+    document.querySelectorAll('.expert-tf-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.interval === interval);
+    });
+    const selected = getProjectionForInterval(interval);
+    const banner = document.getElementById('expertVerdictMount');
+    if (banner) {
+        banner.innerHTML = renderVerdictBanner(selected);
+        animateConfidenceRing(getVerdictForAnalysis(selected).confidence || 0);
+    }
+    const panel = document.getElementById('plProjectionContent');
+    if (panel) panel.innerHTML = renderProjectionCards(selected);
+    const pill = document.getElementById('projectionVerdictPill');
+    if (pill) {
+        pill.className = `consensus-pill ${getSignalClass(selected?.verdict || 'HOLD')}`;
+        pill.textContent = `${selected?.interval || interval} · ${selected?.verdict || 'HOLD'} · ${selected?.confidence || 0}%`;
+    }
 }
 
 // ==================== WATCHLIST / SCANNER ====================
@@ -677,8 +968,9 @@ async function loadWatchlistStatus() {
 
             const changeClass = stock.change >= 0 ? 'green' : 'red';
             let signalColor = 'var(--text-secondary)';
-            if (stock.signal.includes('BUY')) signalColor = 'var(--green)';
-            if (stock.signal.includes('SELL')) signalColor = 'var(--red)';
+            const stockSignal = stock.signal || 'NEUTRAL';
+            if (stockSignal.includes('BUY')) signalColor = 'var(--green)';
+            if (stockSignal.includes('SELL')) signalColor = 'var(--red)';
 
             const getPredIcon = (pred) => {
                 if (pred === 'UP') return '<span class="green">↑</span>';
@@ -693,10 +985,10 @@ async function loadWatchlistStatus() {
                 <td style="font-family:'JetBrains Mono',monospace">${sym}${stock.price}</td>
                 <td class="${changeClass}">${stock.change > 0 ? '+' : ''}${stock.change}%</td>
                 <td>${getPredIcon(preds['1m'])}</td>
-                <td>${getPredIcon(preds['2m'])}</td>
-                <td>${getPredIcon(preds['1h'])}</td>
-                <td>${getPredIcon(preds['2h'])}</td>
-                <td style="color:${signalColor};font-weight:600">${stock.signal}</td>
+                <td>${getPredIcon(preds['3m'])}</td>
+                <td>${getPredIcon(preds['5m'])}</td>
+                <td>${getPredIcon(preds['15m'])}</td>
+                <td style="color:${signalColor};font-weight:600">${stockSignal}</td>
                 <td>
                     <div style="background:rgba(255,255,255,0.08);width:60px;height:6px;border-radius:3px;overflow:hidden;">
                         <div style="width:${Math.min(Math.abs(stock.score), 100)}%;background:${stock.score > 0 ? 'var(--green)' : 'var(--red)'};height:100%;"></div>
@@ -711,13 +1003,18 @@ async function loadWatchlistStatus() {
 }
 
 // ==================== CHART MODAL ====================
+function setChartIntervalActive(interval) {
+    document.querySelectorAll('.tf-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.textContent === interval);
+    });
+}
+
 async function openChartModal(symbol) {
     state.currentSymbol = symbol;
     state.currentInterval = '5m';
 
     // Reset toolbar buttons
-    document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
-    document.querySelector('.tf-btn:nth-child(2)').classList.add('active');
+    setChartIntervalActive('5m');
 
     document.getElementById('chartModal').style.display = 'flex';
     document.body.style.overflow = 'hidden';
@@ -751,16 +1048,12 @@ async function openChartModal(symbol) {
 function changeChartInterval(interval) {
     if (state.currentInterval === interval) return;
     state.currentInterval = interval;
-    
-    // Update active button state
-    const buttons = document.querySelectorAll('.tf-btn');
-    buttons.forEach(btn => {
-        if (btn.textContent === interval) btn.classList.add('active');
-        else btn.classList.remove('active');
-    });
+    state.selectedExpertTimeframe = interval;
+    setChartIntervalActive(interval);
 
     // Re-fetch and re-render the chart with the new interval
     renderLightweightChart(state.currentSymbol, interval);
+    loadSignalPanel(state.currentSymbol);
 }
 
 async function renderLightweightChart(symbol, interval = '5m') {
@@ -782,7 +1075,7 @@ async function renderLightweightChart(symbol, interval = '5m') {
     
     if (window.LightweightCharts) {
         const commonOpts = {
-            layout: { background: { type: 'solid', color: '#0a0e17' }, textColor: '#94a3b8' },
+            layout: { background: { type: 'solid', color: '#000000' }, textColor: '#94a3b8' },
             grid: { vertLines: { color: 'rgba(42, 46, 57, 0.3)' }, horzLines: { color: 'rgba(42, 46, 57, 0.3)' } },
             crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
             timeScale: { visible: false, borderColor: 'rgba(197, 203, 206, 0.4)' },
@@ -815,7 +1108,7 @@ async function renderLightweightChart(symbol, interval = '5m') {
         mScale.subscribeVisibleLogicalRangeChange(r => { if(r) { rScale.setVisibleLogicalRange(r); dScale.setVisibleLogicalRange(r); }});
         
         try {
-            const periodMap = { '1m': '1d', '5m': '5d', '15m': '5d', '30m': '1mo', '1h': '1mo', '1d': '1y' };
+            const periodMap = { '1m': '1d', '3m': '5d', '5m': '5d', '15m': '5d', '30m': '1mo', '1h': '1mo', '1d': '1y' };
             const reqPeriod = periodMap[interval] || '5d';
             const res = await fetch(`${API_BASE}/api/stock-data/${encodeURIComponent(symbol)}?period=${reqPeriod}&interval=${interval}&markers=true`);
             const data = await res.json();
@@ -844,8 +1137,11 @@ async function renderLightweightChart(symbol, interval = '5m') {
 // ==================== SIGNAL & AI ====================
 async function loadSignalPanel(symbol) {
     const content = document.getElementById('chartSignalContent');
+    const loading = document.getElementById('chartSignalLoading');
+    if (loading) loading.style.display = 'flex';
+    if (content) content.style.display = 'none';
     try {
-        const res = await fetch(`${API_BASE}/api/signal/${encodeURIComponent(symbol)}?risk=${state.riskLevel}`);
+        const res = await fetch(`${API_BASE}/api/signal/${encodeURIComponent(symbol)}?risk=${state.riskLevel}&interval=${encodeURIComponent(state.currentInterval || '5m')}`);
         const sig = await res.json();
         document.getElementById('chartSignalLoading').style.display = 'none';
         content.style.display = 'block';
@@ -856,7 +1152,7 @@ async function loadSignalPanel(symbol) {
 }
 
 function generateSignalHTML(sig) {
-    const st = (sig.signal || 'HOLD').toLowerCase();
+    const st = getSignalClass(sig.signal || 'HOLD');
     const conf = (sig.confidence || 0) * 100;
     return `
         <div class="signal-action-box-lg ${st}">
@@ -902,6 +1198,12 @@ async function fetchRealtimePrice(symbol) {
         const sym = getCurrencySymbol();
         if (d.price) {
             document.getElementById('realtimePrice').textContent = `${sym}${fmtNum(d.price)}`;
+            const changeEl = document.getElementById('realtimeChange');
+            if (changeEl) {
+                const up = (d.change || 0) >= 0;
+                changeEl.className = `rt-change ${up ? 'positive' : 'negative'}`;
+                changeEl.textContent = `${up ? '+' : ''}${fmtNum(d.change)} (${up ? '+' : ''}${(d.change_pct || 0).toFixed(2)}%)`;
+            }
             document.getElementById('realtimeHigh').textContent = `${sym}${fmtNum(d.high)}`;
             document.getElementById('realtimeLow').textContent = `${sym}${fmtNum(d.low)}`;
             document.getElementById('realtimeVol').textContent = fmtVol(d.volume);
@@ -982,7 +1284,9 @@ async function loadMarketStatus() {
 }
 
 function initMarketTimer() {
-    setInterval(async () => {
+    if (state.marketTimerInterval) clearInterval(state.marketTimerInterval);
+
+    const refreshTimer = async () => {
         try {
             const res = await fetch(`${API_BASE}/api/market-status`);
             const data = await res.json();
@@ -1004,7 +1308,10 @@ function initMarketTimer() {
             if (modVal) modVal.textContent = ind.timer_label + ' ' + timeStr;
             
         } catch(e) {}
-    }, 1000);
+    };
+
+    refreshTimer();
+    state.marketTimerInterval = setInterval(refreshTimer, 1000);
 }
 
 function formatSeconds(s) {
@@ -1086,7 +1393,6 @@ function initTradingViewTicker() {
 
 // ==================== UTILS ====================
 function getCurrencySymbol() {
-    if (state.market === 'us' || state.market === 'crypto') return '$';
     return '₹';
 }
 function fmtNum(n) { return (n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }

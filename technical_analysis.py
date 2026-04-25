@@ -12,6 +12,28 @@ import logging
 warnings.filterwarnings('ignore', category=FutureWarning)
 logger = logging.getLogger(__name__)
 
+
+def _project_pivot_line(values, pivot_mask):
+    """Project a line from the last two confirmed pivots at every candle."""
+    arr = values.to_numpy(dtype=float)
+    pivots = np.flatnonzero(pivot_mask.fillna(False).to_numpy())
+    projected = np.full(len(values), np.nan)
+    cursor = 0
+    last_pivots = []
+
+    for i in range(len(values)):
+        while cursor < len(pivots) and pivots[cursor] < i:
+            last_pivots.append(pivots[cursor])
+            cursor += 1
+        if len(last_pivots) >= 2:
+            p1, p2 = last_pivots[-2], last_pivots[-1]
+            if p2 != p1:
+                slope = (arr[p2] - arr[p1]) / (p2 - p1)
+                projected[i] = arr[p2] + slope * (i - p2)
+
+    return pd.Series(projected, index=values.index)
+
+
 def detect_advanced_patterns(df):
     """Detect complex candlestick and chart patterns"""
     df = df.copy()
@@ -73,6 +95,86 @@ def detect_advanced_patterns(df):
     
     df['Pattern_Triangle_Breakout_Up'] = volatility_contraction.shift(1) & breakout_up
     df['Pattern_Triangle_Breakout_Down'] = volatility_contraction.shift(1) & breakout_down
+
+    # 6. PDF-informed trend-line logic: at least two pivots create a line,
+    # the third test validates it, and a volume breakout suggests trend change.
+    pivot_window = 5
+    pivot_high = high_p.eq(high_p.rolling(pivot_window * 2 + 1, center=True).max())
+    pivot_low = low_p.eq(low_p.rolling(pivot_window * 2 + 1, center=True).min())
+    df['Trend_Support'] = _project_pivot_line(low_p, pivot_low)
+    df['Trend_Resistance'] = _project_pivot_line(high_p, pivot_high)
+
+    avg_range = candle_range.rolling(14).mean().replace(0, np.nan)
+    trend_tolerance = avg_range.fillna(candle_range.expanding().mean()) * 0.35
+    vol_sma = df['Volume'].rolling(20).mean()
+    volume_confirm = df['Volume'] > (vol_sma * 1.15)
+
+    support_test = (
+        df['Trend_Support'].notna() &
+        ((low_p - df['Trend_Support']).abs() <= trend_tolerance) &
+        (close_p > open_p)
+    )
+    resistance_test = (
+        df['Trend_Resistance'].notna() &
+        ((high_p - df['Trend_Resistance']).abs() <= trend_tolerance) &
+        (close_p < open_p)
+    )
+
+    df['Pattern_Trendline_Support_Test'] = support_test
+    df['Pattern_Trendline_Resistance_Test'] = resistance_test
+    df['Pattern_Trendline_Breakout_Up'] = (
+        df['Trend_Resistance'].notna() &
+        (close_p > df['Trend_Resistance'] + trend_tolerance) &
+        (close_p.shift(1) <= df['Trend_Resistance'].shift(1) + trend_tolerance.shift(1)) &
+        volume_confirm
+    )
+    df['Pattern_Trendline_Breakout_Down'] = (
+        df['Trend_Support'].notna() &
+        (close_p < df['Trend_Support'] - trend_tolerance) &
+        (close_p.shift(1) >= df['Trend_Support'].shift(1) - trend_tolerance.shift(1)) &
+        volume_confirm
+    )
+
+    # 7. Fibonacci retracement zones from the latest rolling swing.
+    fib_window = min(60, max(20, len(df) // 2))
+    swing_high = high_p.rolling(fib_window).max()
+    swing_low = low_p.rolling(fib_window).min()
+    swing_range = (swing_high - swing_low).replace(0, np.nan)
+    high_pos = high_p.rolling(fib_window).apply(np.argmax, raw=True)
+    low_pos = low_p.rolling(fib_window).apply(np.argmin, raw=True)
+    swing_up = high_pos > low_pos
+
+    df['Fib_382'] = np.where(swing_up, swing_high - swing_range * 0.382, swing_low + swing_range * 0.382)
+    df['Fib_500'] = np.where(swing_up, swing_high - swing_range * 0.500, swing_low + swing_range * 0.500)
+    df['Fib_618'] = np.where(swing_up, swing_high - swing_range * 0.618, swing_low + swing_range * 0.618)
+    fib_tol = avg_range.fillna(candle_range.expanding().mean()) * 0.45
+    near_fib = (
+        (close_p - df['Fib_382']).abs().le(fib_tol) |
+        (close_p - df['Fib_500']).abs().le(fib_tol) |
+        (close_p - df['Fib_618']).abs().le(fib_tol)
+    )
+    df['Pattern_Fib_Bounce_Buy'] = near_fib & swing_up & (close_p > open_p) & (close_p > close_p.shift(1))
+    df['Pattern_Fib_Rejection_Sell'] = near_fib & (~swing_up) & (close_p < open_p) & (close_p < close_p.shift(1))
+    df['Pattern_Fib_Extension_Up'] = swing_up & (close_p > swing_high.shift(1)) & volume_confirm
+    df['Pattern_Fib_Extension_Down'] = (~swing_up) & (close_p < swing_low.shift(1)) & volume_confirm
+
+    # 8. Classical reversal patterns from repeated peaks/troughs.
+    prior_high = high_p.rolling(20).max().shift(15)
+    recent_high = high_p.rolling(20).max()
+    prior_low = low_p.rolling(20).min().shift(15)
+    recent_low = low_p.rolling(20).min()
+    df['Pattern_Double_Top'] = (
+        prior_high.notna() &
+        ((recent_high - prior_high).abs() / prior_high <= 0.012) &
+        (close_p < low_p.rolling(10).min().shift(1)) &
+        volume_confirm
+    )
+    df['Pattern_Double_Bottom'] = (
+        prior_low.notna() &
+        ((recent_low - prior_low).abs() / prior_low <= 0.012) &
+        (close_p > high_p.rolling(10).max().shift(1)) &
+        volume_confirm
+    )
     
     return df
 
@@ -558,6 +660,46 @@ def analyze_indicators(df):
     if last.get('Pattern_Triangle_Breakout_Down', False):
         signals.append({'name': 'Triangle Breakout', 'signal': 'SELL', 'strength': 'strong',
                        'value': 'Downward Break', 'reason': 'Volatility contraction followed by downside volume break'})
+
+    if last.get('Pattern_Trendline_Support_Test', False):
+        signals.append({'name': 'Trendline Test', 'signal': 'BUY', 'strength': 'moderate',
+                       'value': 'Support respected', 'reason': 'Validated trend line held as support'})
+
+    if last.get('Pattern_Trendline_Resistance_Test', False):
+        signals.append({'name': 'Trendline Test', 'signal': 'SELL', 'strength': 'moderate',
+                       'value': 'Resistance respected', 'reason': 'Validated trend line held as resistance'})
+
+    if last.get('Pattern_Trendline_Breakout_Up', False):
+        signals.append({'name': 'Trendline Breakout', 'signal': 'BUY', 'strength': 'strong',
+                       'value': 'Upside break', 'reason': 'Price broke validated resistance with volume'})
+
+    if last.get('Pattern_Trendline_Breakout_Down', False):
+        signals.append({'name': 'Trendline Breakout', 'signal': 'SELL', 'strength': 'strong',
+                       'value': 'Downside break', 'reason': 'Price broke validated support with volume'})
+
+    if last.get('Pattern_Fib_Bounce_Buy', False):
+        signals.append({'name': 'Fibonacci', 'signal': 'BUY', 'strength': 'moderate',
+                       'value': 'Retracement bounce', 'reason': 'Price bounced from a Fibonacci retracement zone'})
+
+    if last.get('Pattern_Fib_Rejection_Sell', False):
+        signals.append({'name': 'Fibonacci', 'signal': 'SELL', 'strength': 'moderate',
+                       'value': 'Retracement rejection', 'reason': 'Price rejected a Fibonacci retracement zone'})
+
+    if last.get('Pattern_Fib_Extension_Up', False):
+        signals.append({'name': 'Fibonacci Extension', 'signal': 'BUY', 'strength': 'strong',
+                       'value': 'Upside extension', 'reason': 'Price extended beyond prior swing high with volume'})
+
+    if last.get('Pattern_Fib_Extension_Down', False):
+        signals.append({'name': 'Fibonacci Extension', 'signal': 'SELL', 'strength': 'strong',
+                       'value': 'Downside extension', 'reason': 'Price extended below prior swing low with volume'})
+
+    if last.get('Pattern_Double_Bottom', False):
+        signals.append({'name': 'Double Bottom', 'signal': 'BUY', 'strength': 'strong',
+                       'value': 'Breakout', 'reason': 'Repeated troughs followed by upside confirmation'})
+
+    if last.get('Pattern_Double_Top', False):
+        signals.append({'name': 'Double Top', 'signal': 'SELL', 'strength': 'strong',
+                       'value': 'Breakdown', 'reason': 'Repeated peaks followed by downside confirmation'})
     
     # Calculate overall score
     buy_score = 0
@@ -611,4 +753,9 @@ def get_indicator_summary(df):
         'mfi': float(last.get('MFI', 0)) if not pd.isna(last.get('MFI', np.nan)) else None,
         'cci': float(last.get('CCI', 0)) if not pd.isna(last.get('CCI', np.nan)) else None,
         'volume_ratio': float(last.get('Volume_Ratio', 1)) if not pd.isna(last.get('Volume_Ratio', np.nan)) else None,
+        'trend_support': float(last.get('Trend_Support', 0)) if not pd.isna(last.get('Trend_Support', np.nan)) else None,
+        'trend_resistance': float(last.get('Trend_Resistance', 0)) if not pd.isna(last.get('Trend_Resistance', np.nan)) else None,
+        'fib_382': float(last.get('Fib_382', 0)) if not pd.isna(last.get('Fib_382', np.nan)) else None,
+        'fib_500': float(last.get('Fib_500', 0)) if not pd.isna(last.get('Fib_500', np.nan)) else None,
+        'fib_618': float(last.get('Fib_618', 0)) if not pd.isna(last.get('Fib_618', np.nan)) else None,
     }

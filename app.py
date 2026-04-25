@@ -16,7 +16,8 @@ from datetime import datetime, timedelta
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 from market_data import (
-    get_stock_data, get_stock_info, get_market_status, search_symbol, get_news_for_stock
+    get_stock_data, get_stock_info, get_market_status, search_symbol,
+    get_news_for_stock, get_display_name, resolve_stock_symbol
 )
 from technical_analysis import compute_all_indicators, analyze_indicators, get_indicator_summary
 from sentiment_analysis import get_news_for_symbol, analyze_sentiment
@@ -49,11 +50,7 @@ def get_symbols():
     market = request.args.get('market', 'all')
     result = {}
     if market in ['all', 'indian']:
-        result['indian'] = [{'symbol': s, 'name': s.replace('.NS', '')} for s in INDIAN_STOCKS]
-    if market in ['all', 'us']:
-        result['us'] = [{'symbol': s, 'name': s} for s in US_STOCKS]
-    if market in ['all', 'crypto']:
-        result['crypto'] = [{'symbol': s, 'name': s.replace('-USD', '')} for s in CRYPTO_PAIRS]
+        result['indian'] = [{'symbol': s, 'name': get_display_name(s)} for s in INDIAN_STOCKS]
     return jsonify(result)
 
 
@@ -141,6 +138,7 @@ def stock_data(symbol):
         return jsonify({'error': 'No data available'}), 404
         
     markers = []
+    df_analyzed = None
     if markers_req:
         try:
             from technical_analysis import compute_all_indicators, analyze_indicators
@@ -244,10 +242,20 @@ def get_signal(symbol):
     period = request.args.get('period', '5d')
     if risk_level not in RISK_LEVELS:
         return jsonify({'error': 'Invalid risk level. Use: safe, medium, aggressive'}), 400
-    df = get_stock_data(symbol, period=period, interval=interval)
+
+    ticker = resolve_stock_symbol(symbol)
+    expert_interval = interval if interval in {'1m', '3m', '5m', '15m', '30m', '1h', '1d'} else '5m'
+    try:
+        expert_result = run_expert_analysis(ticker, 10000, preferred_interval=expert_interval)
+        if not expert_result.get('error'):
+            return jsonify(_expert_result_to_signal_payload(ticker, expert_result, risk_level))
+    except Exception as e:
+        logger.error(f"Expert signal fallback for {symbol}: {e}")
+
+    df = get_stock_data(ticker, period=period, interval=interval)
     if df is None:
         return jsonify({'error': 'No data available'}), 404
-    signal = generate_signal(df, symbol, risk_level, NEWS_API_KEY)
+    signal = generate_signal(df, ticker, risk_level, NEWS_API_KEY)
     return jsonify(signal)
 
 
@@ -257,18 +265,23 @@ def scan():
     risk_level = request.args.get('risk', 'medium')
     limit = int(request.args.get('limit', 20))
     
-    if market == 'indian':
-        symbols = INDIAN_STOCKS
-    elif market == 'us':
-        symbols = US_STOCKS
-    elif market == 'crypto':
-        symbols = CRYPTO_PAIRS
-    elif market == 'all':
-        symbols = INDIAN_STOCKS[:15] + US_STOCKS[:10] + CRYPTO_PAIRS[:10]
-    else:
-        symbols = INDIAN_STOCKS[:10]
-    
-    results = scan_market(symbols, risk_level, NEWS_API_KEY)
+    symbols = INDIAN_STOCKS
+
+    # Keep dashboard verdicts aligned with Expert Analysis by using the same
+    # 5-minute expert engine as the primary dashboard scan.
+    results = []
+    for symbol in symbols:
+        try:
+            expert_result = run_expert_analysis(symbol, 10000, intervals=['5m'])
+            if not expert_result.get('error'):
+                results.append(_expert_result_to_dashboard_signal(symbol, expert_result))
+        except Exception as e:
+            logger.error(f"Expert scan error for {symbol}: {e}")
+
+    results.sort(
+        key=lambda x: (abs(x.get('expert_net_score', 0)), x.get('confidence', 0)),
+        reverse=True
+    )
     return jsonify({
         'market': market,
         'risk_level': risk_level,
@@ -290,7 +303,7 @@ def chart_data(symbol):
     
     # Smarter default periods
     if interval in ['1d', '1wk']: period = '1y' if period == '5d' else period
-    if interval in ['1m', '2m']: period = '1d' if period == '5d' else period
+    if interval in ['1m', '2m', '3m']: period = '1d' if period == '5d' else period
 
     df = get_stock_data(symbol, period, interval)
     if df is None or df.empty:
@@ -357,6 +370,18 @@ def chart_data(symbol):
             advanced_patterns.append({'time': ts, 'type': 'Tri Brk Dn', 'position': 'aboveBar', 'color': '#ef4444', 'shape': 'arrowDown'})
         if row.get('Pattern_H_and_S', False):
             advanced_patterns.append({'time': ts, 'type': 'H&S', 'position': 'aboveBar', 'color': '#f59e0b', 'shape': 'circle'})
+        if row.get('Pattern_Trendline_Breakout_Up', False):
+            advanced_patterns.append({'time': ts, 'type': 'Trend Brk Up', 'position': 'belowBar', 'color': '#00b386', 'shape': 'arrowUp'})
+        if row.get('Pattern_Trendline_Breakout_Down', False):
+            advanced_patterns.append({'time': ts, 'type': 'Trend Brk Dn', 'position': 'aboveBar', 'color': '#ef4444', 'shape': 'arrowDown'})
+        if row.get('Pattern_Fib_Bounce_Buy', False):
+            advanced_patterns.append({'time': ts, 'type': 'Fib Bounce', 'position': 'belowBar', 'color': '#00b386', 'shape': 'circle'})
+        if row.get('Pattern_Fib_Rejection_Sell', False):
+            advanced_patterns.append({'time': ts, 'type': 'Fib Reject', 'position': 'aboveBar', 'color': '#f59e0b', 'shape': 'circle'})
+        if row.get('Pattern_Double_Bottom', False):
+            advanced_patterns.append({'time': ts, 'type': 'Double Bottom', 'position': 'belowBar', 'color': '#00b386', 'shape': 'arrowUp'})
+        if row.get('Pattern_Double_Top', False):
+            advanced_patterns.append({'time': ts, 'type': 'Double Top', 'position': 'aboveBar', 'color': '#ef4444', 'shape': 'arrowDown'})
             
     # Add Signal Markers (Last few candles)
     if current_signal == 'BUY':
@@ -501,26 +526,156 @@ WATCHLIST = [
 ]
 
 
+def _verdict_direction(verdict):
+    value = (verdict or 'HOLD').upper()
+    if 'BUY' in value:
+        return 'BUY'
+    if 'SELL' in value:
+        return 'SELL'
+    return 'HOLD'
+
+
+def _verdict_to_prediction(verdict):
+    direction = _verdict_direction(verdict)
+    if direction == 'BUY':
+        return 'UP'
+    if direction == 'SELL':
+        return 'DOWN'
+    return 'NEUTRAL'
+
+
+def _timeframe_trade(tf):
+    direction = _verdict_direction(tf.get('verdict'))
+    action = 'BUY' if direction == 'BUY' else ('SELL' if direction == 'SELL' else 'WAIT')
+    return {
+        'action': action,
+        'entry': round(float(tf.get('entry') or tf.get('current_price') or 0), 2),
+        'target': round(float(tf.get('target') or tf.get('current_price') or 0), 2),
+        'stop_loss': round(float(tf.get('stop_loss') or 0), 2),
+    }
+
+
+def _expert_reason(verdict):
+    rules = verdict.get('rules_fired') or []
+    directional = [
+        rule.get('rule', '')
+        for rule in rules
+        if rule.get('type') in {'BUY', 'SELL'} and rule.get('rule')
+    ]
+    return ', '.join(directional[:2]) if directional else 'Expert rule consensus'
+
+
+def _expert_result_to_dashboard_signal(symbol, result):
+    verdict = result.get('expert_verdict', {}) or {}
+    profit_loss = result.get('profit_loss', {}) or {}
+    scenarios = profit_loss.get('scenarios') or []
+    first_target = scenarios[0] if scenarios else {}
+    price = float(result.get('current_price') or 0)
+    change_pct = float(result.get('day_change') or 0)
+    prev_price = price / (1 + change_pct / 100) if price and change_pct != -100 else price
+    change = price - prev_price if price else 0
+    timeframes = result.get('timeframes') or []
+    predictions = {tf.get('interval'): _verdict_to_prediction(tf.get('verdict')) for tf in timeframes}
+    trades = {tf.get('interval'): _timeframe_trade(tf) for tf in timeframes}
+
+    return {
+        'symbol': symbol,
+        'name': get_display_name(symbol),
+        'price': round(price, 2),
+        'change': round(change, 2),
+        'change_pct': round(change_pct, 2),
+        'signal': verdict.get('verdict', 'HOLD'),
+        'confidence': round(float(verdict.get('confidence') or 0) / 100, 3),
+        'entry_price': profit_loss.get('entry', price),
+        'target_price': first_target.get('target', price),
+        'stop_loss': profit_loss.get('stop_loss', price),
+        'expected_profit_pct': first_target.get('profit_pct', 0),
+        'risk_reward_ratio': profit_loss.get('risk_reward', 0),
+        'expert_net_score': verdict.get('net_score', 0),
+        'expert_interval': result.get('primary_interval', '5m'),
+        'score': round(float(verdict.get('net_score') or 0), 1),
+        'reason': _expert_reason(verdict),
+        'time_predictions': predictions,
+        'trades': trades,
+    }
+
+
+def _expert_result_to_signal_payload(symbol, result, risk_level='medium'):
+    verdict = result.get('expert_verdict', {}) or {}
+    profit_loss = result.get('profit_loss', {}) or {}
+    scenarios = profit_loss.get('scenarios') or []
+    first_target = scenarios[0] if scenarios else {}
+    direction = _verdict_direction(verdict.get('verdict'))
+    confidence = round(float(verdict.get('confidence') or 0) / 100, 3)
+
+    return {
+        'symbol': symbol,
+        'name': get_display_name(symbol),
+        'timestamp': result.get('last_updated'),
+        'current_price': result.get('current_price', 0),
+        'price': result.get('current_price', 0),
+        'day_change': result.get('day_change', 0),
+        'change_pct': result.get('day_change', 0),
+        'risk_level': risk_level,
+        'signal': verdict.get('verdict', 'HOLD'),
+        'signal_strength': 'Expert consensus',
+        'confidence': confidence,
+        'confidence_pct': f"{confidence * 100:.1f}%",
+        'entry_price': profit_loss.get('entry', result.get('current_price', 0)),
+        'target_price': first_target.get('target', result.get('current_price', 0)),
+        'stop_loss': profit_loss.get('stop_loss', result.get('current_price', 0)),
+        'expected_profit_pct': first_target.get('profit_pct', 0),
+        'max_loss_pct': profit_loss.get('max_loss_pct', 0),
+        'risk_reward_ratio': profit_loss.get('risk_reward', 0),
+        'holding_period': result.get('primary_interval', '5m'),
+        'sentiment_label': 'Aligned with expert engine',
+        'buy_count': 1 if direction == 'BUY' else 0,
+        'sell_count': 1 if direction == 'SELL' else 0,
+        'neutral_count': 1 if direction == 'HOLD' else 0,
+        'technical_score': verdict.get('net_score', 0),
+        'composite_score': verdict.get('net_score', 0),
+        'expert_verdict': verdict,
+        'profit_loss': profit_loss,
+        'recommendation': {
+            'action': verdict.get('verdict', 'HOLD'),
+            'summary': profit_loss.get('recommendation', 'Expert engine did not find a clear trade setup.'),
+            'details': [_expert_reason(verdict)],
+            'risk_warning': f"Risk mode: {risk_level}",
+        },
+    }
+
+
 @app.route('/api/expert-analysis/<symbol>')
 def expert_analysis(symbol):
     """Run full expert-based analysis with profit/loss projections."""
     investment = float(request.args.get('investment', 10000))
-    if not symbol.endswith(".NS") and not symbol.endswith(".BO") and not symbol.endswith("-USD"):
-        ticker = f"{symbol}.NS"
-    else:
-        ticker = symbol
-    result = run_expert_analysis(ticker, investment)
+    interval = request.args.get('interval', '5m')
+    preferred_interval = interval if interval in {'1m', '3m', '5m', '15m', '30m', '1h', '1d'} else '5m'
+    ticker = resolve_stock_symbol(symbol)
+    result = run_expert_analysis(ticker, investment, preferred_interval=preferred_interval)
     return jsonify(result)
 
 
 @app.route('/api/watchlist-status')
 def watchlist_status():
     """Get market data and analysis for the watchlist (intraday opportunities)."""
-    data = get_watchlist_data(WATCHLIST)
-    if data is None:
+    analysis = []
+    for symbol in WATCHLIST:
+        try:
+            expert_result = run_expert_analysis(symbol, 10000, intervals=['1m', '3m', '5m', '15m'])
+            if not expert_result.get('error'):
+                analysis.append(_expert_result_to_dashboard_signal(symbol, expert_result))
+        except Exception as e:
+            logger.error(f"Expert watchlist error for {symbol}: {e}")
+
+    if not analysis:
         return jsonify({"error": "Failed to fetch data"})
-    analysis = analyze_watchlist(data, WATCHLIST)
-    opportunities = [x for x in analysis if x['signal'] in ['STRONG BUY', 'BUY', 'SELL']]
+
+    analysis.sort(
+        key=lambda x: (abs(x.get('expert_net_score', 0)), x.get('confidence', 0)),
+        reverse=True
+    )
+    opportunities = [x for x in analysis if _verdict_direction(x.get('signal')) in ['BUY', 'SELL']]
     return jsonify({
         "market_data": analysis,
         "top_picks": opportunities[:5]

@@ -1,8 +1,8 @@
 :root {
-    --bg-color: #0a0e17;
-    --bg-surface: #111827;
-    --card-bg: #161b22;
-    --card-bg-hover: #1c2333;
+    --bg-color: #000000;
+    --bg-surface: #050505;
+    --card-bg: #080808;
+    --card-bg-hover: #111111;
     --text-primary: #f0f6fc;
     --text-secondary: #8b949e;
     --accent-green: #00e676;
@@ -39,9 +39,7 @@ body {
     padding: 20px;
     min-height: 100vh;
     overflow-x: hidden;
-    background-image:
-        radial-gradient(ellipse at 20% 50%, rgba(41, 121, 255, 0.04) 0%, transparent 60%),
-        radial-gradient(ellipse at 80% 20%, rgba(179, 136, 255, 0.03) 0%, transparent 60%);
+    background-image: none;
 }
 
 h1, h2, h3 {

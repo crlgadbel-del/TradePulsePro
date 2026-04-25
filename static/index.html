@@ -42,7 +42,7 @@
                         <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                     </svg>
                     <input type="text" class="search-input" id="searchInput"
-                           placeholder="Search stock or crypto (RELIANCE, AAPL, BTC)..."
+                           placeholder="Search company name, e.g. Reliance Industries"
                            autocomplete="off">
                     <button class="search-submit-btn" id="searchSubmitBtn" onclick="triggerSearch()" title="Search">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
@@ -142,8 +142,6 @@
             <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
                 <div class="market-tabs">
                     <button class="market-tab active" onclick="setMarket('indian')" id="tab-indian">Indian <span class="tab-count">50</span></button>
-                    <button class="market-tab" onclick="setMarket('us')" id="tab-us">US <span class="tab-count">40</span></button>
-                    <button class="market-tab" onclick="setMarket('crypto')" id="tab-crypto">Crypto <span class="tab-count">30</span></button>
                 </div>
             </div>
 
@@ -195,8 +193,8 @@
                 <!-- Expert Input -->
                 <div class="expert-input-bar">
                     <div class="expert-input-field">
-                        <label>Stock Symbol</label>
-                        <input type="text" id="expertSymbolInput" placeholder="e.g. RELIANCE" value="RELIANCE">
+                        <label>Stock Name</label>
+                        <input type="text" id="expertSymbolInput" placeholder="e.g. Reliance Industries" value="Reliance Industries">
                     </div>
                     <div class="expert-input-field">
                         <label>Investment (₹)</label>
@@ -235,7 +233,7 @@
                         <table class="stock-table">
                             <thead><tr>
                                 <th>Symbol</th><th>Price (INR)</th><th>Change %</th>
-                                <th>1m</th><th>2m</th><th>1h</th><th>2h</th>
+                                <th>1m</th><th>3m</th><th>5m</th><th>15m</th>
                                 <th>Signal</th><th>Score</th>
                             </tr></thead>
                             <tbody id="watchlistTableBody"></tbody>
@@ -262,7 +260,7 @@
                         </div>
                     </div>
                     <div class="chart-modal-controls">
-                        <button class="action-btn predict-btn" style="margin-right:12px; font-weight:bold; background:var(--yellow); color:black;" onclick="openExpertForSymbol(state.currentSymbol)">
+                        <button class="action-btn predict-btn" style="margin-right:12px; font-weight:bold; background:var(--yellow); color:black;" onclick="openExpertForSymbol(state.currentSymbol, state.currentInterval)">
                             Expert Analysis
                         </button>
                         <button class="detail-close" onclick="closeChartModal()">✕</button>
@@ -287,6 +285,7 @@
                 <div class="chart-toolbar" style="margin-top: 12px; margin-bottom: 12px;">
                     <div class="tf-group" id="intervalGroup">
                         <button class="nav-tab tf-btn" onclick="changeChartInterval('1m')">1m</button>
+                        <button class="nav-tab tf-btn" onclick="changeChartInterval('3m')">3m</button>
                         <button class="nav-tab tf-btn active" onclick="changeChartInterval('5m')">5m</button>
                         <button class="nav-tab tf-btn" onclick="changeChartInterval('15m')">15m</button>
                         <button class="nav-tab tf-btn" onclick="changeChartInterval('30m')">30m</button>

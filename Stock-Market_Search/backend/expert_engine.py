@@ -103,22 +103,46 @@ def evaluate_expert_rules(indicators):
     resistance = indicators.get('resistance', 0)
     current_price = indicators.get('current_price', 0)
     atr = indicators.get('atr', 0)
+    advanced_rules = indicators.get('advanced_pattern_rules', [])
+    risk_penalty = indicators.get('risk_penalty', 0)
+    trend_bias_up = trend_slope > 0.00015 and (
+        price_vs_vwap == 'above' or price_vs_sma20 == 'above' or macd_hist > 0
+    )
+    trend_bias_down = trend_slope < -0.00015 and (
+        price_vs_vwap == 'below' or price_vs_sma20 == 'below' or macd_hist < 0
+    )
 
     # ── Rule 1: RSI (weight: 20) ──
     weight = 20
     total_weight += weight
-    if rsi < 25:
+    if rsi < 25 and trend_bias_down:
+        sell_score += weight * 0.45
+        rules_fired.append({"rule": "RSI Oversold In Downtrend", "type": "SELL", "weight": int(weight * 0.45),
+                            "detail": f"RSI={rsi:.1f} is oversold but trend/momentum still points down"})
+    elif rsi < 25:
         buy_score += weight
         rules_fired.append({"rule": "RSI Extreme Oversold", "type": "BUY", "weight": weight,
                             "detail": f"RSI={rsi:.1f} < 25 → Strong reversal likely"})
+    elif rsi < 35 and trend_bias_down:
+        sell_score += weight * 0.25
+        rules_fired.append({"rule": "RSI Weak During Downtrend", "type": "SELL", "weight": int(weight * 0.25),
+                            "detail": f"RSI={rsi:.1f} remains weak with bearish trend confirmation"})
     elif rsi < 35:
         buy_score += weight * 0.7
         rules_fired.append({"rule": "RSI Oversold", "type": "BUY", "weight": int(weight * 0.7),
                             "detail": f"RSI={rsi:.1f} in oversold zone"})
+    elif rsi > 75 and trend_bias_up:
+        buy_score += weight * 0.45
+        rules_fired.append({"rule": "RSI Overbought In Uptrend", "type": "BUY", "weight": int(weight * 0.45),
+                            "detail": f"RSI={rsi:.1f} is hot, but trend/momentum still confirms upside"})
     elif rsi > 75:
         sell_score += weight
         rules_fired.append({"rule": "RSI Extreme Overbought", "type": "SELL", "weight": weight,
                             "detail": f"RSI={rsi:.1f} > 75 → Price exhaustion likely"})
+    elif rsi > 65 and trend_bias_up:
+        buy_score += weight * 0.25
+        rules_fired.append({"rule": "RSI Strong During Uptrend", "type": "BUY", "weight": int(weight * 0.25),
+                            "detail": f"RSI={rsi:.1f} confirms bullish momentum without exhaustion"})
     elif rsi > 65:
         sell_score += weight * 0.7
         rules_fired.append({"rule": "RSI Overbought", "type": "SELL", "weight": int(weight * 0.7),
@@ -150,10 +174,18 @@ def evaluate_expert_rules(indicators):
     # ── Rule 3: Bollinger Bands (weight: 15) ──
     weight = 15
     total_weight += weight
-    if bb_position == 'below_lower':
+    if bb_position == 'below_lower' and trend_bias_down and vol_trend == 'spike_down':
+        sell_score += weight * 0.65
+        rules_fired.append({"rule": "Bollinger Downside Breakout", "type": "SELL", "weight": int(weight * 0.65),
+                            "detail": "Price is below lower band with bearish trend and volume confirmation"})
+    elif bb_position == 'below_lower':
         buy_score += weight
         rules_fired.append({"rule": "Price Below Lower Bollinger", "type": "BUY", "weight": weight,
                             "detail": "Price below lower band → potential bounce/mean reversion"})
+    elif bb_position == 'above_upper' and trend_bias_up and vol_trend == 'spike_up':
+        buy_score += weight * 0.65
+        rules_fired.append({"rule": "Bollinger Upside Breakout", "type": "BUY", "weight": int(weight * 0.65),
+                            "detail": "Price is above upper band with bullish trend and volume confirmation"})
     elif bb_position == 'above_upper':
         sell_score += weight
         rules_fired.append({"rule": "Price Above Upper Bollinger", "type": "SELL", "weight": weight,
@@ -179,7 +211,27 @@ def evaluate_expert_rules(indicators):
         rules_fired.append({"rule": "Price Below VWAP", "type": "SELL", "weight": int(weight * 0.6),
                             "detail": "Trading below VWAP → institutional selling pressure"})
 
-    # ── Rule 5: Volume (weight: 10) ──
+    # ── Rule 5: SMA trend alignment (weight: 12) ──
+    weight = 12
+    total_weight += weight
+    if price_vs_sma20 == 'above' and trend_slope > 0:
+        buy_score += weight * 0.75
+        rules_fired.append({"rule": "Price Above SMA20", "type": "BUY", "weight": int(weight * 0.75),
+                            "detail": "Price is above short-term average with positive slope"})
+    elif price_vs_sma20 == 'below' and trend_slope < 0:
+        sell_score += weight * 0.75
+        rules_fired.append({"rule": "Price Below SMA20", "type": "SELL", "weight": int(weight * 0.75),
+                            "detail": "Price is below short-term average with negative slope"})
+    elif price_vs_sma20 == 'above':
+        buy_score += weight * 0.35
+        rules_fired.append({"rule": "Price Holding SMA20", "type": "BUY", "weight": int(weight * 0.35),
+                            "detail": "Price remains above the 20-period average"})
+    elif price_vs_sma20 == 'below':
+        sell_score += weight * 0.35
+        rules_fired.append({"rule": "Price Losing SMA20", "type": "SELL", "weight": int(weight * 0.35),
+                            "detail": "Price remains below the 20-period average"})
+
+    # ── Rule 6: Volume (weight: 10) ──
     weight = 10
     total_weight += weight
     if vol_trend == 'spike_up':
@@ -194,7 +246,7 @@ def evaluate_expert_rules(indicators):
         rules_fired.append({"rule": "Declining Volume", "type": "HOLD", "weight": 0,
                             "detail": "Decreasing volume → trend losing steam"})
 
-    # ── Rule 6: Trend Slope (weight: 10) ──
+    # ── Rule 7: Trend Slope (weight: 10) ──
     weight = 10
     total_weight += weight
     if trend_slope > 0.0002:
@@ -214,22 +266,48 @@ def evaluate_expert_rules(indicators):
         rules_fired.append({"rule": "Mild Downtrend", "type": "SELL", "weight": int(weight * 0.4),
                             "detail": f"Price slope mildly negative"})
 
-    # ── Rule 7: Stochastic (weight: 10) ──
+    # ── Rule 8: Stochastic (weight: 10) ──
     weight = 10
     total_weight += weight
-    if stoch_k < 20 and stoch_d < 20:
+    if stoch_k < 20 and stoch_d < 20 and trend_bias_down:
+        sell_score += weight * 0.45
+        rules_fired.append({"rule": "Stochastic Oversold In Downtrend", "type": "SELL", "weight": int(weight * 0.45),
+                            "detail": f"Stochastic %K={stoch_k:.1f}, %D={stoch_d:.1f} remains weak in a downtrend"})
+    elif stoch_k < 20 and stoch_d < 20:
         buy_score += weight
         rules_fired.append({"rule": "Stochastic Oversold", "type": "BUY", "weight": weight,
                             "detail": f"Stochastic %K={stoch_k:.1f}, %D={stoch_d:.1f} → oversold"})
+    elif stoch_k > 80 and stoch_d > 80 and trend_bias_up:
+        buy_score += weight * 0.45
+        rules_fired.append({"rule": "Stochastic Overbought In Uptrend", "type": "BUY", "weight": int(weight * 0.45),
+                            "detail": f"Stochastic %K={stoch_k:.1f}, %D={stoch_d:.1f} confirms trend strength"})
     elif stoch_k > 80 and stoch_d > 80:
         sell_score += weight
         rules_fired.append({"rule": "Stochastic Overbought", "type": "SELL", "weight": weight,
                             "detail": f"Stochastic %K={stoch_k:.1f}, %D={stoch_d:.1f} → overbought"})
 
+    # ── Rule 9: Advanced pattern brain from uploaded modules (weight varies) ──
+    for pattern_rule in advanced_rules:
+        weight = pattern_rule.get('weight', 0)
+        if not weight:
+            continue
+        total_weight += weight
+        if pattern_rule.get('type') == 'BUY':
+            buy_score += weight
+        elif pattern_rule.get('type') == 'SELL':
+            sell_score += weight
+        rules_fired.append({
+            "rule": pattern_rule.get('rule', 'Advanced Pattern'),
+            "type": pattern_rule.get('type', 'HOLD'),
+            "weight": weight,
+            "detail": pattern_rule.get('detail', '')
+        })
+
     # ── Compute Final Verdict ──
     net_score = buy_score - sell_score
     max_possible = total_weight
     confidence = min(abs(net_score) / max_possible * 100, 100)
+    confidence = max(confidence * (1 - min(max(risk_penalty, 0), 0.35)), 0)
 
     if net_score > 15:
         verdict = "STRONG BUY"
@@ -389,26 +467,174 @@ def calculate_profit_loss(current_price, verdict, atr, support, resistance,
 # ─── Main Expert Analysis Function ───────────────────────────────────────────
 
 def safe_float(val, default=0.0):
-    if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
+    if val is None or pd.isna(val) or np.isinf(val):
         return default
     return float(val)
 
 
-def run_expert_analysis(ticker, investment_amount=10000):
+def _bool_flag(row, name):
+    value = row.get(name, False)
+    return bool(value) if not pd.isna(value) else False
+
+
+def _advanced_pattern_brain(data):
     """
-    Runs the full expert analysis pipeline for a single stock ticker.
+    Convert PDF-derived technical concepts into engine-ready rules:
+    validated trend lines, volume breakouts, Fibonacci zones, and repeated
+    peak/trough reversals.
+    """
+    try:
+        from technical_analysis import compute_all_indicators
+        analyzed = compute_all_indicators(data.copy())
+        if analyzed is None or analyzed.empty:
+            return {"rules": [], "levels": {}, "active": []}
+
+        last = analyzed.iloc[-1]
+        rules = []
+        specs = [
+            ("Pattern_Trendline_Breakout_Up", "BUY", 18, "Validated Trendline Breakout",
+             "Price broke trend resistance with volume; trend-line breakout implies possible trend change."),
+            ("Pattern_Trendline_Breakout_Down", "SELL", 18, "Validated Trendline Breakdown",
+             "Price broke trend support with volume; trend-line breakdown implies possible trend change."),
+            ("Pattern_Trendline_Support_Test", "BUY", 9, "Trendline Support Test",
+             "Price respected projected support; repeated tests improve trend-line validity."),
+            ("Pattern_Trendline_Resistance_Test", "SELL", 9, "Trendline Resistance Test",
+             "Price respected projected resistance; repeated tests improve trend-line validity."),
+            ("Pattern_Fib_Bounce_Buy", "BUY", 10, "Fibonacci Retracement Bounce",
+             "Price bounced from a Fibonacci retracement zone."),
+            ("Pattern_Fib_Rejection_Sell", "SELL", 10, "Fibonacci Retracement Rejection",
+             "Price rejected a Fibonacci retracement zone."),
+            ("Pattern_Fib_Extension_Up", "BUY", 14, "Fibonacci Extension Up",
+             "Price extended beyond the prior swing high with volume confirmation."),
+            ("Pattern_Fib_Extension_Down", "SELL", 14, "Fibonacci Extension Down",
+             "Price extended below the prior swing low with volume confirmation."),
+            ("Pattern_Double_Bottom", "BUY", 14, "Double Bottom Breakout",
+             "Repeated troughs were followed by upside confirmation."),
+            ("Pattern_Double_Top", "SELL", 14, "Double Top Breakdown",
+             "Repeated peaks were followed by downside confirmation."),
+        ]
+
+        for flag, signal_type, weight, rule, detail in specs:
+            if _bool_flag(last, flag):
+                rules.append({
+                    "type": signal_type,
+                    "weight": weight,
+                    "rule": rule,
+                    "detail": detail,
+                })
+
+        level_names = {
+            "trend_support": "Trend_Support",
+            "trend_resistance": "Trend_Resistance",
+            "fib_382": "Fib_382",
+            "fib_500": "Fib_500",
+            "fib_618": "Fib_618",
+        }
+        levels = {
+            key: round(safe_float(last.get(col), 0), 2)
+            for key, col in level_names.items()
+            if safe_float(last.get(col), 0) > 0
+        }
+
+        return {
+            "rules": rules,
+            "levels": levels,
+            "active": [rule["rule"] for rule in rules],
+        }
+    except Exception:
+        return {"rules": [], "levels": {}, "active": []}
+
+
+def _risk_return_brain(close):
+    returns = close.pct_change().dropna().tail(60)
+    if returns.empty:
+        return {
+            "mean_return_pct": 0,
+            "volatility_pct": 0,
+            "coefficient_of_variation": 0,
+            "risk_penalty": 0,
+            "risk_state": "Normal",
+        }
+
+    mean_return = safe_float(returns.mean(), 0)
+    volatility = safe_float(returns.std(), 0)
+    coefficient = abs(volatility / mean_return) if abs(mean_return) > 1e-6 else 0
+    risk_penalty = min(volatility * 25, 0.35)
+
+    if volatility > 0.012:
+        risk_state = "High"
+    elif volatility > 0.006:
+        risk_state = "Moderate"
+    else:
+        risk_state = "Normal"
+
+    return {
+        "mean_return_pct": round(mean_return * 100, 3),
+        "volatility_pct": round(volatility * 100, 3),
+        "coefficient_of_variation": round(coefficient, 2),
+        "risk_penalty": round(risk_penalty, 3),
+        "risk_state": risk_state,
+    }
+
+
+EXPERT_TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "1d"]
+EXPERT_PERIODS = {
+    "1m": "5d",
+    "3m": "5d",
+    "5m": "5d",
+    "15m": "1mo",
+    "30m": "1mo",
+    "1h": "3mo",
+    "1d": "1y",
+}
+
+
+def _resample_ohlcv(data, rule):
+    agg = {
+        "Open": "first",
+        "High": "max",
+        "Low": "min",
+        "Close": "last",
+        "Volume": "sum",
+    }
+    return (
+        data.resample(rule, label="right", closed="right")
+        .agg(agg)
+        .dropna(subset=["Open", "High", "Low", "Close"])
+    )
+
+
+def _download_expert_data(ticker, period, interval):
+    fetch_interval = "1m" if interval == "3m" else ("60m" if interval == "1h" else interval)
+    data = yf.download(ticker, period=period, interval=fetch_interval, progress=False)
+    if data.empty:
+        data = yf.Ticker(ticker).history(period=period, interval=fetch_interval)
+
+    if data.empty:
+        return data
+
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.droplevel(1)
+
+    if interval == "3m":
+        data = _resample_ohlcv(data, "3min")
+
+    return data
+
+
+def _run_single_timeframe_analysis(ticker, investment_amount=10000, interval="5m"):
+    """
+    Runs the full expert analysis pipeline for one stock ticker and timeframe.
     Returns comprehensive analysis with profit/loss projections.
     """
     try:
-        # Fetch intraday data (2 days for enough history)
-        data = yf.download(ticker, period="5d", interval="5m", progress=False)
+        # Fetch intraday data. 3m is built from 1m candles because Yahoo does
+        # not expose a native 3-minute interval.
+        period = EXPERT_PERIODS.get(interval, "5d")
+        data = _download_expert_data(ticker, period=period, interval=interval)
 
         if data.empty:
-            return {"error": f"No data available for {ticker}"}
-
-        # Handle multi-level columns
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.droplevel(1)
+            return {"error": f"No data available for {ticker} on {interval}"}
 
         close = data['Close'].dropna()
         high = data['High'].dropna()
@@ -512,8 +738,12 @@ def run_expert_analysis(ticker, investment_amount=10000):
         support = safe_float(support, current_price * 0.97)
         resistance = safe_float(resistance, current_price * 1.03)
 
-        # Day High/Low
-        today_data = data.tail(78)  # ~6.5 hours of 5-min candles
+        advanced_brain = _advanced_pattern_brain(data)
+        risk_brain = _risk_return_brain(close)
+
+        # Day High/Low from the latest full NSE/BSE intraday session.
+        session_candles = {"1m": 390, "3m": 130, "5m": 78, "15m": 26, "30m": 13, "1h": 7, "1d": 1}
+        today_data = data.tail(session_candles.get(interval, 78))
         day_high = safe_float(today_data['High'].max(), current_price)
         day_low = safe_float(today_data['Low'].min(), current_price)
 
@@ -533,6 +763,8 @@ def run_expert_analysis(ticker, investment_amount=10000):
             'resistance': resistance,
             'current_price': current_price,
             'atr': atr_val,
+            'advanced_pattern_rules': advanced_brain.get('rules', []),
+            'risk_penalty': risk_brain.get('risk_penalty', 0),
         }
 
         # ── Run Expert Rules ──
@@ -547,6 +779,7 @@ def run_expert_analysis(ticker, investment_amount=10000):
         # ── Build Response ──
         return {
             "symbol": ticker,
+            "interval": interval,
             "current_price": round(current_price, 2),
             "day_change": day_change,
             "day_high": round(day_high, 2),
@@ -570,10 +803,144 @@ def run_expert_analysis(ticker, investment_amount=10000):
                 "support": round(support, 2),
                 "resistance": round(resistance, 2),
                 "trend_slope": round(trend_slope, 6),
+                "trend_support": advanced_brain.get("levels", {}).get("trend_support"),
+                "trend_resistance": advanced_brain.get("levels", {}).get("trend_resistance"),
+                "fib_382": advanced_brain.get("levels", {}).get("fib_382"),
+                "fib_500": advanced_brain.get("levels", {}).get("fib_500"),
+                "fib_618": advanced_brain.get("levels", {}).get("fib_618"),
+                "risk_state": risk_brain.get("risk_state"),
+                "volatility_pct": risk_brain.get("volatility_pct"),
             },
             "expert_verdict": expert_result,
             "profit_loss": pl_result,
+            "analysis_brain": {
+                "advanced_patterns": advanced_brain,
+                "risk_return": risk_brain,
+                "concepts": [
+                    "Trend lines: repeated tests validate support/resistance; breakout can signal trend change.",
+                    "Fibonacci: retracement and extension zones are used as reaction levels.",
+                    "Risk-return: volatility and coefficient of variation reduce confidence when risk is elevated.",
+                ],
+            },
         }
 
     except Exception as e:
-        return {"error": f"Analysis failed for {ticker}: {str(e)}"}
+        return {"error": f"Analysis failed for {ticker} on {interval}: {str(e)}"}
+
+
+def _compact_timeframe_result(result):
+    verdict = result.get("expert_verdict", {}) or {}
+    profit_loss = result.get("profit_loss", {}) or {}
+    scenarios = profit_loss.get("scenarios") or []
+    first_target = scenarios[0] if scenarios else {}
+
+    return {
+        "interval": result.get("interval", "5m"),
+        "verdict": verdict.get("verdict", "HOLD"),
+        "confidence": verdict.get("confidence", 0),
+        "buy_score": verdict.get("buy_score", 0),
+        "sell_score": verdict.get("sell_score", 0),
+        "net_score": verdict.get("net_score", 0),
+        "expert_verdict": verdict,
+        "indicators": result.get("indicators", {}),
+        "current_price": result.get("current_price", 0),
+        "day_change": result.get("day_change", 0),
+        "direction": profit_loss.get("direction", "NONE"),
+        "entry": profit_loss.get("entry", result.get("current_price", 0)),
+        "target": first_target.get("target", result.get("current_price", 0)),
+        "stop_loss": profit_loss.get("stop_loss", 0),
+        "profit_pct": first_target.get("profit_pct", 0),
+        "risk_reward": profit_loss.get("risk_reward", 0),
+        "profit_loss": profit_loss,
+        "analysis_brain": result.get("analysis_brain", {}),
+    }
+
+
+def _build_timeframe_consensus(timeframes):
+    if not timeframes:
+        return {"verdict": "HOLD", "score": 0, "confidence": 0}
+
+    verdict_scores = {
+        "STRONG BUY": 2,
+        "BUY": 1,
+        "HOLD": 0,
+        "SELL": -1,
+        "STRONG SELL": -2,
+    }
+    weighted_score = 0
+    confidence_total = 0
+    counts = {"BUY": 0, "SELL": 0, "HOLD": 0}
+
+    for item in timeframes:
+        confidence = float(item.get("confidence") or 0)
+        score = verdict_scores.get(item.get("verdict", "HOLD"), 0)
+        weighted_score += score * max(confidence, 1)
+        confidence_total += max(confidence, 1)
+
+        verdict = item.get("verdict", "HOLD")
+        if "BUY" in verdict:
+            counts["BUY"] += 1
+        elif "SELL" in verdict:
+            counts["SELL"] += 1
+        else:
+            counts["HOLD"] += 1
+
+    avg_score = weighted_score / confidence_total if confidence_total else 0
+    avg_confidence = sum(float(item.get("confidence") or 0) for item in timeframes) / len(timeframes)
+
+    if avg_score >= 1.35:
+        verdict = "STRONG BUY"
+    elif avg_score >= 0.35:
+        verdict = "BUY"
+    elif avg_score <= -1.35:
+        verdict = "STRONG SELL"
+    elif avg_score <= -0.35:
+        verdict = "SELL"
+    else:
+        verdict = "HOLD"
+
+    return {
+        "verdict": verdict,
+        "score": round(avg_score, 2),
+        "confidence": round(avg_confidence, 1),
+        "counts": counts,
+    }
+
+
+def run_expert_analysis(ticker, investment_amount=10000, intervals=None, preferred_interval=None):
+    """
+    Run expert analysis across the requested intraday timeframes.
+    The 5m result remains the primary response for backward compatibility,
+    with 1m/3m/5m/15m summaries added under ``timeframes``.
+    """
+    requested_intervals = intervals or EXPERT_TIMEFRAMES
+    preferred_interval = preferred_interval or ("5m" if intervals is None else requested_intervals[0])
+    results = []
+    errors = {}
+
+    for interval in requested_intervals:
+        result = _run_single_timeframe_analysis(ticker, investment_amount, interval)
+        if result.get("error"):
+            errors[interval] = result["error"]
+        else:
+            results.append(result)
+
+    if not results:
+        first_error = next(iter(errors.values()), f"No data available for {ticker}")
+        return {"error": first_error, "symbol": ticker, "timeframe_errors": errors}
+
+    primary = (
+        next((item for item in results if item.get("interval") == preferred_interval), None) or
+        next((item for item in results if item.get("interval") == "5m"), None) or
+        results[0]
+    )
+    timeframe_summaries = [_compact_timeframe_result(item) for item in results]
+    primary.update({
+        "primary_interval": primary.get("interval", "5m"),
+        "requested_interval": preferred_interval,
+        "timeframes": timeframe_summaries,
+        "timeframe_consensus": _build_timeframe_consensus(timeframe_summaries),
+        "timeframe_errors": errors,
+        "last_updated": datetime.now().isoformat(),
+    })
+    return primary

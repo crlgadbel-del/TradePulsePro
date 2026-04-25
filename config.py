@@ -26,25 +26,59 @@ INDIAN_STOCKS = [
     'BAJAJ-AUTO.NS', 'UPL.NS', 'ADANIPORTS.NS', 'HDFC.NS', 'VEDL.NS'
 ]
 
-US_STOCKS = [
-    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA',
-    'META', 'TSLA', 'BRK-B', 'UNH', 'JNJ',
-    'V', 'XOM', 'JPM', 'PG', 'MA',
-    'HD', 'CVX', 'MRK', 'ABBV', 'LLY',
-    'PEP', 'KO', 'AVGO', 'COST', 'TMO',
-    'WMT', 'MCD', 'CRM', 'CSCO', 'ACN',
-    'AMD', 'INTC', 'ADBE', 'NFLX', 'PYPL',
-    'DIS', 'NKE', 'BA', 'GS', 'UBER'
-]
-
-CRYPTO_PAIRS = [
-    'BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'SOL-USD',
-    'ADA-USD', 'DOGE-USD', 'DOT-USD', 'AVAX-USD', 'MATIC-USD',
-    'LINK-USD', 'UNI-USD', 'ATOM-USD', 'LTC-USD', 'ETC-USD',
-    'FIL-USD', 'NEAR-USD', 'APT-USD', 'ARB-USD', 'OP-USD',
-    'SHIB-USD', 'INJ-USD', 'SUI-USD', 'SEI-USD', 'TIA-USD',
-    'PEPE-USD', 'FET-USD', 'RENDER-USD', 'IMX-USD', 'MANA-USD'
-]
+# Friendly company names used for search, dashboard labels, and expert analysis.
+INDIAN_STOCK_NAMES = {
+    'RELIANCE.NS': 'Reliance Industries',
+    'TCS.NS': 'Tata Consultancy Services',
+    'HDFCBANK.NS': 'HDFC Bank',
+    'INFY.NS': 'Infosys',
+    'ICICIBANK.NS': 'ICICI Bank',
+    'HINDUNILVR.NS': 'Hindustan Unilever',
+    'SBIN.NS': 'State Bank of India',
+    'BHARTIARTL.NS': 'Bharti Airtel',
+    'ITC.NS': 'ITC',
+    'KOTAKBANK.NS': 'Kotak Mahindra Bank',
+    'LT.NS': 'Larsen & Toubro',
+    'AXISBANK.NS': 'Axis Bank',
+    'BAJFINANCE.NS': 'Bajaj Finance',
+    'ASIANPAINT.NS': 'Asian Paints',
+    'MARUTI.NS': 'Maruti Suzuki India',
+    'TITAN.NS': 'Titan Company',
+    'SUNPHARMA.NS': 'Sun Pharmaceutical Industries',
+    'TATAMOTORS.NS': 'Tata Motors',
+    'WIPRO.NS': 'Wipro',
+    'HCLTECH.NS': 'HCL Technologies',
+    'ULTRACEMCO.NS': 'UltraTech Cement',
+    'NESTLEIND.NS': 'Nestle India',
+    'BAJAJFINSV.NS': 'Bajaj Finserv',
+    'NTPC.NS': 'NTPC',
+    'POWERGRID.NS': 'Power Grid Corporation of India',
+    'M&M.NS': 'Mahindra & Mahindra',
+    'TATASTEEL.NS': 'Tata Steel',
+    'ONGC.NS': 'Oil and Natural Gas Corporation',
+    'JSWSTEEL.NS': 'JSW Steel',
+    'ADANIENT.NS': 'Adani Enterprises',
+    'DIVISLAB.NS': "Divi's Laboratories",
+    'DRREDDY.NS': "Dr. Reddy's Laboratories",
+    'CIPLA.NS': 'Cipla',
+    'TECHM.NS': 'Tech Mahindra',
+    'GRASIM.NS': 'Grasim Industries',
+    'HEROMOTOCO.NS': 'Hero MotoCorp',
+    'APOLLOHOSP.NS': 'Apollo Hospitals Enterprise',
+    'EICHERMOT.NS': 'Eicher Motors',
+    'SBILIFE.NS': 'SBI Life Insurance',
+    'BPCL.NS': 'Bharat Petroleum Corporation',
+    'COALINDIA.NS': 'Coal India',
+    'BRITANNIA.NS': 'Britannia Industries',
+    'TATACONSUM.NS': 'Tata Consumer Products',
+    'HINDALCO.NS': 'Hindalco Industries',
+    'INDUSINDBK.NS': 'IndusInd Bank',
+    'BAJAJ-AUTO.NS': 'Bajaj Auto',
+    'UPL.NS': 'UPL',
+    'ADANIPORTS.NS': 'Adani Ports and Special Economic Zone',
+    'HDFC.NS': 'Housing Development Finance Corporation',
+    'VEDL.NS': 'Vedanta',
+}
 
 # Risk Level Parameters
 RISK_LEVELS = {

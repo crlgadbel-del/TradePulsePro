@@ -15,6 +15,74 @@ logger = logging.getLogger(__name__)
 data_cache = TTLCache(maxsize=500, ttl=300)
 
 
+def _lookup_key(value):
+    """Normalize text for forgiving local symbol/name matching."""
+    normalized = value.upper().replace('&', 'AND')
+    key = ''.join(ch for ch in normalized if ch.isalnum())
+    return key.replace('AND', '')
+
+
+def _clean_symbol(symbol):
+    return symbol.replace('.NS', '').replace('.BO', '').replace('-USD', '')
+
+
+def get_display_name(symbol):
+    """Return a friendly stock name without hitting a remote API."""
+    try:
+        from config import INDIAN_STOCK_NAMES
+        return INDIAN_STOCK_NAMES.get(symbol, _clean_symbol(symbol))
+    except Exception:
+        return _clean_symbol(symbol)
+
+
+def resolve_stock_symbol(query):
+    """Resolve ticker, short code, or company name to a configured symbol."""
+    from config import INDIAN_STOCKS, INDIAN_STOCK_NAMES
+
+    raw = (query or '').strip()
+    if not raw:
+        return ''
+
+    upper = raw.upper()
+    if upper in INDIAN_STOCKS:
+        return upper
+
+    lookup = _lookup_key(raw)
+    for symbol in INDIAN_STOCKS:
+        clean = _clean_symbol(symbol)
+        name = INDIAN_STOCK_NAMES.get(symbol, clean)
+        candidates = {symbol, clean, name}
+        if lookup in {_lookup_key(candidate) for candidate in candidates}:
+            return symbol
+
+    matches = search_symbol(raw)
+    if matches:
+        return matches[0]['symbol']
+
+    if upper.endswith(('.NS', '.BO', '-USD')) or upper.startswith('^'):
+        return upper
+    return f"{upper}.NS"
+
+
+def _resample_intraday(df, rule):
+    agg = {
+        'Open': 'first',
+        'High': 'max',
+        'Low': 'min',
+        'Close': 'last',
+        'Volume': 'sum',
+    }
+    for optional_col in ('Dividends', 'Stock Splits'):
+        if optional_col in df.columns:
+            agg[optional_col] = 'sum'
+
+    return (
+        df.resample(rule, label='right', closed='right')
+        .agg(agg)
+        .dropna(subset=['Open', 'High', 'Low', 'Close'])
+    )
+
+
 def get_stock_data(symbol, period='5d', interval='5m'):
     """Fetch intraday stock/crypto data"""
     cache_key = f"{symbol}_{period}_{interval}"
@@ -24,7 +92,8 @@ def get_stock_data(symbol, period='5d', interval='5m'):
     
     try:
         ticker = yf.Ticker(symbol)
-        df = ticker.history(period=period, interval=interval)
+        fetch_interval = '1m' if interval == '3m' else interval
+        df = ticker.history(period=period, interval=fetch_interval)
         
         if df.empty:
             logger.warning(f"No data returned for {symbol}")
@@ -33,6 +102,8 @@ def get_stock_data(symbol, period='5d', interval='5m'):
         # Clean data
         df = df.dropna()
         df.index = pd.to_datetime(df.index)
+        if interval == '3m':
+            df = _resample_intraday(df, '3min')
         
         # Add returns
         df['Returns'] = df['Close'].pct_change()
@@ -93,7 +164,7 @@ def get_stock_info(symbol):
 
         result = {
             'symbol': symbol,
-            'name': info.get('shortName', info.get('longName', symbol)),
+            'name': info.get('shortName', info.get('longName', get_display_name(symbol))),
             'price': info.get('currentPrice', info.get('regularMarketPrice', 0)),
             'change': info.get('regularMarketChange', 0),
             'change_pct': info.get('regularMarketChangePercent', 0),
@@ -118,7 +189,7 @@ def get_stock_info(symbol):
         logger.error(f"Error fetching info for {symbol}: {e}")
         return {
             'symbol': symbol,
-            'name': symbol.replace('.NS', '').replace('-USD', ''),
+            'name': get_display_name(symbol),
             'price': 0,
             'change': 0,
             'change_pct': 0,
@@ -163,8 +234,8 @@ def get_daily_data(symbol, period='3mo'):
 
 
 def search_symbol(query):
-    """Search for stock/crypto symbols — fast local match first, then yfinance fallback"""
-    from config import INDIAN_STOCKS, US_STOCKS, CRYPTO_PAIRS
+    """Search for stock symbols by ticker, short code, or full company name."""
+    from config import INDIAN_STOCKS, INDIAN_STOCK_NAMES
 
     results = []
     q = query.upper().strip()
@@ -173,67 +244,63 @@ def search_symbol(query):
 
     # 1. Fast local search across all configured lists
     for symbol in INDIAN_STOCKS:
-        clean = symbol.replace('.NS', '').replace('.BO', '')
-        if q in symbol.upper() or q in clean.upper():
+        clean = _clean_symbol(symbol)
+        name = INDIAN_STOCK_NAMES.get(symbol, clean)
+        lookup_q = _lookup_key(q)
+        haystacks = [symbol.upper(), clean.upper(), name.upper(), _lookup_key(name), _lookup_key(clean)]
+        if any(q in item for item in haystacks) or any(lookup_q and lookup_q in item for item in haystacks):
             results.append({
                 'symbol': symbol,
-                'name': clean,
-                'type': 'indian_stock'
-            })
-    for symbol in US_STOCKS:
-        if q in symbol.upper():
-            results.append({
-                'symbol': symbol,
-                'name': symbol,
-                'type': 'us_stock'
-            })
-    for symbol in CRYPTO_PAIRS:
-        clean = symbol.replace('-USD', '')
-        if q in symbol.upper() or q in clean.upper():
-            results.append({
-                'symbol': symbol,
-                'name': clean,
-                'type': 'crypto'
+                'name': name,
+                'type': 'Indian Equity',
+                'exchange': 'NSE',
             })
 
-    # If we found local matches, return them immediately (fast path)
-    if results:
+    seen = {item['symbol'] for item in results}
+
+    if len(results) >= 6:
         return results[:12]
 
-    # 2. Slow fallback: try yfinance for unknown symbols
+    # 2. Yahoo Finance search gives TradingView-like recommendations for
+    # company names, tickers, indexes, ETFs, and global symbols.
     try:
-        # Try direct ticker lookup
-        ticker = yf.Ticker(q)
-        info = ticker.info
-        if info and info.get('shortName'):
+        search = yf.Search(query, max_results=12, news_count=0, lists_count=0,
+                           include_research=False, enable_fuzzy_query=True,
+                           recommended=8, timeout=4, raise_errors=False)
+        for quote in search.quotes or []:
+            symbol = quote.get('symbol')
+            if not symbol or symbol in seen:
+                continue
+            quote_type = quote.get('quoteType') or quote.get('typeDisp') or 'Security'
+            quote_type_normalized = str(quote_type).lower()
+            if quote_type_normalized not in {'equity', 'etf', 'index', 'cryptocurrency', 'currency'}:
+                continue
+            exchange = quote.get('exchDisp') or quote.get('exchange') or ''
             results.append({
-                'symbol': q,
-                'name': info.get('shortName', q),
-                'type': 'stock'
+                'symbol': symbol,
+                'name': quote.get('shortname') or quote.get('longname') or quote.get('name') or symbol,
+                'type': quote_type.title() if isinstance(quote_type, str) else 'Security',
+                'exchange': exchange,
+                'logo_url': quote.get('logoUrl', ''),
             })
-
-        # Try with .NS suffix for Indian stocks
-        ticker_ns = yf.Ticker(f"{q}.NS")
-        info_ns = ticker_ns.info
-        if info_ns and info_ns.get('shortName'):
-            results.append({
-                'symbol': f"{q}.NS",
-                'name': info_ns.get('shortName', q),
-                'type': 'indian_stock'
-            })
-
-        # Try with -USD suffix for crypto
-        ticker_crypto = yf.Ticker(f"{q}-USD")
-        info_crypto = ticker_crypto.info
-        if info_crypto and info_crypto.get('shortName'):
-            results.append({
-                'symbol': f"{q}-USD",
-                'name': info_crypto.get('shortName', q),
-                'type': 'crypto'
-            })
-
+            seen.add(symbol)
     except Exception as e:
         logger.error(f"Error searching for {query}: {e}")
+
+    # 3. Last resort: try NSE suffix for short names that Yahoo search misses.
+    if not results:
+        try:
+            ticker_ns = yf.Ticker(f"{q}.NS")
+            info_ns = ticker_ns.info
+            if info_ns and info_ns.get('shortName'):
+                results.append({
+                    'symbol': f"{q}.NS",
+                    'name': info_ns.get('shortName', q),
+                    'type': 'Indian Equity',
+                    'exchange': 'NSE',
+                })
+        except Exception as e:
+            logger.error(f"Error searching for {query}: {e}")
 
     return results
 
@@ -328,8 +395,6 @@ def get_market_status():
             'is_holiday': is_holiday,
             'holiday_name': holiday_name,
         },
-        'us': {'is_open': us_is_open, 'name': 'NYSE/NASDAQ'},
-        'crypto': {'is_open': crypto_is_open, 'name': 'Crypto Market'},
         'holidays': holidays_list,
         'server_time': now.strftime('%Y-%m-%d %H:%M:%S IST'),
     }
@@ -410,4 +475,3 @@ def get_news_for_stock(symbol, api_key=''):
     
     data_cache[cache_key] = articles
     return articles
-
