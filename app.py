@@ -1,7 +1,7 @@
 """
 Flask API Server for Intraday Trading Signal Platform
 """
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, redirect, request, send_from_directory
 from flask_cors import CORS
 import pandas as pd
 import numpy as np
@@ -11,6 +11,7 @@ import requests
 import logging
 import warnings
 import time as time_mod
+import re
 from config import *
 from datetime import datetime, timedelta
 
@@ -28,11 +29,27 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder='static', static_url_path='')
 CORS(app)
+STOCK_SEARCH_STATIC_DIR = os.path.join(os.path.dirname(__file__), 'Stock-Market_Search', 'static')
 
 
 @app.route('/')
 def index():
     return send_from_directory('static', 'index.html')
+
+
+@app.route('/stock-search')
+def stock_search_redirect():
+    return redirect('/#stock-research')
+
+
+@app.route('/stock-search/')
+def stock_search_index():
+    return redirect('/#stock-research')
+
+
+@app.route('/stock-search/<path:filename>')
+def stock_search_static(filename):
+    return send_from_directory(STOCK_SEARCH_STATIC_DIR, filename)
 
 
 @app.route('/api/health')
@@ -61,6 +78,78 @@ def search():
         return jsonify([])
     results = search_symbol(query)
     return jsonify(results)
+
+
+def _tradingview_to_yfinance_symbol(item):
+    symbol = re.sub(r'<[^>]+>', '', item.get('symbol') or item.get('ticker') or '').upper().strip()
+    exchange = (item.get('exchange') or '').upper().strip()
+    if not symbol:
+        return ''
+    clean = symbol.split(':')[-1].replace('!', '')
+    if exchange == 'NSE':
+        return f'{clean}.NS'
+    if exchange == 'BSE':
+        return f'{clean}.BO'
+    if exchange in {'BINANCE', 'COINBASE', 'KRAKEN'} and clean.endswith('USD'):
+        return clean.replace('USD', '-USD')
+    return clean
+
+
+@app.route('/api/tradingview-search')
+def tradingview_search():
+    query = request.args.get('q', '').strip()
+    if not query:
+        return jsonify([])
+
+    results = []
+    try:
+        resp = requests.get(
+            'https://symbol-search.tradingview.com/symbol_search/',
+            params={
+                'text': query,
+                'hl': 1,
+                'exchange': '',
+                'lang': 'en',
+                'type': '',
+                'domain': 'production',
+            },
+            headers={
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+                'Referer': 'https://www.tradingview.com/',
+                'Origin': 'https://www.tradingview.com',
+                'Accept': 'application/json,text/plain,*/*',
+            },
+            timeout=5,
+        )
+        resp.raise_for_status()
+        for item in resp.json()[:20]:
+            yf_symbol = _tradingview_to_yfinance_symbol(item)
+            if not yf_symbol:
+                continue
+            exchange = item.get('exchange') or ''
+            description = re.sub(r'<[^>]+>', '', item.get('description') or item.get('symbol') or yf_symbol)
+            results.append({
+                'symbol': yf_symbol,
+                'name': description,
+                'exchange': exchange,
+                'type': f'TradingView {exchange}'.strip(),
+                'tv_symbol': re.sub(r'<[^>]+>', '', item.get('symbol') or ''),
+                'source': 'TradingView',
+            })
+    except Exception as exc:
+        logger.warning(f"TradingView search failed for {query}: {exc}")
+
+    if not results:
+        results = search_symbol(query)
+
+    seen = set()
+    unique = []
+    for item in results:
+        symbol = item.get('symbol')
+        if symbol and symbol not in seen:
+            unique.append(item)
+            seen.add(symbol)
+    return jsonify(unique[:12])
 
 
 @app.route('/api/stock-info/<symbol>')
@@ -131,7 +220,11 @@ def realtime_price(symbol):
 def stock_data(symbol):
     period = request.args.get('period', '5d')
     interval = request.args.get('interval', '5m')
-    markers_req = request.args.get('markers', 'false').lower() == 'true'
+    # Chart BUY/SELL markers are now sourced from /api/signal so the chart,
+    # dashboard, and expert panel agree. Keep technical markers opt-in only for
+    # older debugging flows that explicitly request markers=technical.
+    markers_req = request.args.get('markers', 'false').lower() == 'technical'
+    indicators_req = request.args.get('indicators', 'true').lower() != 'false'
 
     df = get_stock_data(symbol, period, interval)
     if df is None or df.empty:
@@ -139,12 +232,12 @@ def stock_data(symbol):
         
     markers = []
     df_analyzed = None
-    if markers_req:
+    if markers_req or indicators_req:
         try:
             from technical_analysis import compute_all_indicators, analyze_indicators
             import pandas as pd
             df_analyzed = compute_all_indicators(df)
-            if df_analyzed is not None and not df_analyzed.empty:
+            if markers_req and df_analyzed is not None and not df_analyzed.empty:
                 analysis = analyze_indicators(df_analyzed)
                 overall_signal = analysis.get('overall', 'HOLD')
                 last_idx = df_analyzed.index[-1]
@@ -168,7 +261,7 @@ def stock_data(symbol):
         except Exception as e:
             logger.error(f"Failed to generate markers: {e}")
 
-    has_indicators = markers_req and df_analyzed is not None and not df_analyzed.empty
+    has_indicators = indicators_req and df_analyzed is not None and not df_analyzed.empty
 
     data = []
     for idx, row in df.iterrows():
@@ -244,9 +337,9 @@ def get_signal(symbol):
         return jsonify({'error': 'Invalid risk level. Use: safe, medium, aggressive'}), 400
 
     ticker = resolve_stock_symbol(symbol)
-    expert_interval = interval if interval in {'1m', '3m', '5m', '15m', '30m', '1h', '1d'} else '5m'
+    expert_interval = interval if interval in {'1m', '3m', '5m', '15m', '30m', '1h', '1d', '10d'} else '5m'
     try:
-        expert_result = run_expert_analysis(ticker, 10000, preferred_interval=expert_interval)
+        expert_result = _run_expert_analysis(ticker, 10000, preferred_interval=expert_interval)
         if not expert_result.get('error'):
             return jsonify(_expert_result_to_signal_payload(ticker, expert_result, risk_level))
     except Exception as e:
@@ -256,6 +349,8 @@ def get_signal(symbol):
     if df is None:
         return jsonify({'error': 'No data available'}), 404
     signal = generate_signal(df, ticker, risk_level, NEWS_API_KEY)
+    signal.setdefault('expert_interval', expert_interval)
+    signal.setdefault('timestamp', int(time_mod.time()))
     return jsonify(signal)
 
 
@@ -267,16 +362,11 @@ def scan():
     
     symbols = INDIAN_STOCKS
 
-    # Keep dashboard verdicts aligned with Expert Analysis by using the same
-    # 5-minute expert engine as the primary dashboard scan.
-    results = []
-    for symbol in symbols:
-        try:
-            expert_result = run_expert_analysis(symbol, 10000, intervals=['5m'])
-            if not expert_result.get('error'):
-                results.append(_expert_result_to_dashboard_signal(symbol, expert_result))
-        except Exception as e:
-            logger.error(f"Expert scan error for {symbol}: {e}")
+    data = get_watchlist_data(symbols)
+    if data is None:
+        return jsonify({'error': 'Failed to fetch scan data', 'signals': []}), 500
+
+    results = [_fast_stock_to_dashboard_signal(stock) for stock in analyze_watchlist(data, symbols)]
 
     results.sort(
         key=lambda x: (abs(x.get('expert_net_score', 0)), x.get('confidence', 0)),
@@ -302,6 +392,7 @@ def chart_data(symbol):
     interval = request.args.get('interval', '5m')
     
     # Smarter default periods
+    if interval == '10d': period = '10d'
     if interval in ['1d', '1wk']: period = '1y' if period == '5d' else period
     if interval in ['1m', '2m', '3m']: period = '1d' if period == '5d' else period
 
@@ -515,8 +606,13 @@ def ai_analysis(symbol):
 # Import both modules from the Stock-Market_Search backend
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'Stock-Market_Search', 'backend'))
-from expert_engine import run_expert_analysis
-from analyzer import get_market_data as get_watchlist_data, analyze_market as analyze_watchlist
+from analyzer import (
+    get_market_data as get_watchlist_data,
+    analyze_market as analyze_watchlist,
+    get_stock_history_for_chart,
+    get_prediction_trajectory,
+)
+from ai_layer import get_keys_status as get_tradeai_keys_status, set_api_key as set_tradeai_api_key
 
 WATCHLIST = [
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "SBIN.NS",
@@ -524,6 +620,108 @@ WATCHLIST = [
     "ICICIBANK.NS", "MARUTI.NS", "SUNPHARMA.NS", "TITAN.NS",
     "WIPRO.NS", "ASIANPAINT.NS", "BHARTIARTL.NS", "ITC.NS"
 ]
+
+
+def _run_expert_analysis(*args, **kwargs):
+    try:
+        import inspect
+        from expert_engine import run_expert_analysis
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(f"Missing Python dependency: {exc.name}. Run pip install -r requirements.txt") from exc
+    params = inspect.signature(run_expert_analysis).parameters
+    compatible_kwargs = {key: value for key, value in kwargs.items() if key in params}
+    if len(compatible_kwargs) != len(kwargs):
+        skipped = sorted(set(kwargs) - set(compatible_kwargs))
+        logger.info(f"Expert engine does not support options {skipped}; using default engine settings")
+    return run_expert_analysis(*args, **compatible_kwargs)
+
+
+def _tradeai_candidate_tickers(symbol):
+    sym = (symbol or '').upper().strip().replace(' ', '')
+    if not sym:
+        return []
+    if sym.endswith(('.NS', '.BO')) or sym.startswith('^') or sym.endswith('-USD'):
+        return [sym]
+    base = sym.replace('.NS', '').replace('.BO', '')
+    return [f"{base}.NS", f"{base}.BO", base]
+
+
+def _tradeai_search_stock(symbol):
+    attempted = []
+
+    for ticker in _tradeai_candidate_tickers(symbol):
+        attempted.append(ticker)
+        try:
+            quote = yf.Ticker(ticker)
+            exchange = "BSE" if ticker.endswith(".BO") else "NSE"
+            currency = "INR" if ticker.endswith((".NS", ".BO")) else "USD"
+            price = None
+
+            try:
+                fast_info = quote.fast_info
+                price = (
+                    fast_info.get("lastPrice")
+                    or fast_info.get("regularMarketPrice")
+                    or fast_info.get("previousClose")
+                    or fast_info.get("regularMarketPreviousClose")
+                )
+                exchange = fast_info.get("exchange") or exchange
+                currency = fast_info.get("currency") or currency
+            except Exception:
+                pass
+
+            if not price:
+                history = quote.history(period="5d")
+                if history is not None and not history.empty and "Close" in history:
+                    close = history["Close"].dropna()
+                    if not close.empty:
+                        price = close.iloc[-1]
+
+            if price and float(price) > 0:
+                return {
+                    "valid": True,
+                    "ticker": ticker,
+                    "name": get_display_name(ticker),
+                    "price": round(float(price), 2),
+                    "sector": "",
+                    "industry": "",
+                    "exchange": exchange,
+                    "currency": currency,
+                }
+        except Exception as exc:
+            logger.error(f"Search lookup failed for {ticker}: {exc}")
+
+    tried = ", ".join(attempted) if attempted else "no tickers"
+    return {"valid": False, "error": f"'{symbol}' not found. Tried: {tried}."}
+
+
+def _fast_stock_to_dashboard_signal(stock):
+    symbol = stock.get('symbol', '')
+    price = float(stock.get('price') or 0)
+    score = float(stock.get('score') or 0)
+    trades = stock.get('trades') or {}
+    trade = trades.get('5m') or trades.get('3m') or trades.get('1m') or {}
+    entry = float(trade.get('entry') or price or 0)
+    target = float(trade.get('target') or price or 0)
+    stop_loss = float(trade.get('stop_loss') or price or 0)
+    expected_profit_pct = abs((target - entry) / entry * 100) if entry and target else 0
+    max_loss_pct = abs((entry - stop_loss) / entry * 100) if entry and stop_loss else 0
+    risk_reward = round(expected_profit_pct / max_loss_pct, 2) if max_loss_pct else 0
+
+    return {
+        **stock,
+        'symbol': symbol,
+        'name': get_display_name(symbol),
+        'price': round(price, 2),
+        'change_pct': stock.get('change', 0),
+        'confidence': min(abs(score) / 100, 0.95),
+        'entry_price': round(entry, 2) if entry else price,
+        'target_price': round(target, 2) if target else price,
+        'stop_loss': round(stop_loss, 2) if stop_loss else price,
+        'expected_profit_pct': round(expected_profit_pct, 2),
+        'risk_reward_ratio': risk_reward,
+        'expert_net_score': score,
+    }
 
 
 def _verdict_direction(verdict):
@@ -628,6 +826,7 @@ def _expert_result_to_signal_payload(symbol, result, risk_level='medium'):
         'max_loss_pct': profit_loss.get('max_loss_pct', 0),
         'risk_reward_ratio': profit_loss.get('risk_reward', 0),
         'holding_period': result.get('primary_interval', '5m'),
+        'expert_interval': result.get('primary_interval') or result.get('requested_interval') or '5m',
         'sentiment_label': 'Aligned with expert engine',
         'buy_count': 1 if direction == 'BUY' else 0,
         'sell_count': 1 if direction == 'SELL' else 0,
@@ -646,27 +845,64 @@ def _expert_result_to_signal_payload(symbol, result, risk_level='medium'):
 
 
 @app.route('/api/expert-analysis/<symbol>')
+@app.route('/stock-search/api/expert-analysis/<symbol>')
 def expert_analysis(symbol):
     """Run full expert-based analysis with profit/loss projections."""
     investment = float(request.args.get('investment', 10000))
     interval = request.args.get('interval', '5m')
-    preferred_interval = interval if interval in {'1m', '3m', '5m', '15m', '30m', '1h', '1d'} else '5m'
+    preferred_interval = interval if interval in {'1m', '3m', '5m', '15m', '30m', '1h', '1d', '10d'} else '5m'
     ticker = resolve_stock_symbol(symbol)
-    result = run_expert_analysis(ticker, investment, preferred_interval=preferred_interval)
+    result = _run_expert_analysis(ticker, investment, preferred_interval=preferred_interval)
+    if isinstance(result, dict) and not result.get('error'):
+        result.setdefault('requested_interval', preferred_interval)
+        result.setdefault('primary_interval', preferred_interval)
     return jsonify(result)
 
 
+@app.route('/api/search-stock/<symbol>')
+@app.route('/stock-search/api/search-stock/<symbol>')
+def search_stock_compat(symbol):
+    return jsonify(_tradeai_search_stock(symbol))
+
+
+@app.route('/stock-search/api/stock-history/<symbol>')
+def stock_search_history(symbol):
+    ticker = symbol if symbol.upper().endswith((".NS", ".BO")) else f"{symbol}.NS"
+    history = get_stock_history_for_chart(WATCHLIST, ticker)
+    if history is None:
+        return jsonify({"error": "Failed to fetch history"}), 404
+    return jsonify(history)
+
+
+@app.route('/stock-search/api/predict-trajectory/<symbol>')
+def stock_search_predict_trajectory(symbol):
+    ticker = symbol if symbol.upper().endswith((".NS", ".BO")) else f"{symbol}.NS"
+    contexts = request.args.get('contexts', '')
+    ctx_list = [ctx for ctx in contexts.split(',') if ctx]
+    return jsonify(get_prediction_trajectory(ticker, ctx_list))
+
+
+@app.route('/stock-search/api/config/status')
+def stock_search_config_status():
+    return jsonify(get_tradeai_keys_status())
+
+
+@app.route('/stock-search/api/config/keys', methods=['POST'])
+def stock_search_save_config():
+    payload = request.get_json(silent=True) or {}
+    if payload.get("anthropic_key"):
+        set_tradeai_api_key("anthropic", payload["anthropic_key"])
+    if payload.get("groq_key"):
+        set_tradeai_api_key("groq", payload["groq_key"])
+    return jsonify({"status": "saved", **get_tradeai_keys_status()})
+
+
+@app.route('/stock-search/api/market-status')
 @app.route('/api/watchlist-status')
 def watchlist_status():
     """Get market data and analysis for the watchlist (intraday opportunities)."""
-    analysis = []
-    for symbol in WATCHLIST:
-        try:
-            expert_result = run_expert_analysis(symbol, 10000, intervals=['1m', '3m', '5m', '15m'])
-            if not expert_result.get('error'):
-                analysis.append(_expert_result_to_dashboard_signal(symbol, expert_result))
-        except Exception as e:
-            logger.error(f"Expert watchlist error for {symbol}: {e}")
+    data = get_watchlist_data(WATCHLIST)
+    analysis = [_fast_stock_to_dashboard_signal(stock) for stock in analyze_watchlist(data, WATCHLIST)] if data is not None else []
 
     if not analysis:
         return jsonify({"error": "Failed to fetch data"})
@@ -683,8 +919,23 @@ def watchlist_status():
 
 
 if __name__ == '__main__':
+    import socket
+
+    def find_free_port(start=5000, end=5010):
+        for port in range(start, end):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                try:
+                    sock.bind((HOST, port))
+                    return port
+                except OSError:
+                    continue
+        return start
+
+    run_port = find_free_port(PORT, PORT + 10)
     print("=" * 60)
     print("  📊 TradePulse AI — Unified Trading Platform")
-    print("  🌐 Open: http://localhost:5000")
+    print(f"  🌐 Open: http://localhost:{run_port}")
+    if run_port != PORT:
+        print(f"  ℹ️  Port {PORT} was busy, using {run_port} instead")
     print("=" * 60)
-    app.run(host=HOST, port=PORT, debug=DEBUG)
+    app.run(host=HOST, port=run_port, debug=DEBUG)

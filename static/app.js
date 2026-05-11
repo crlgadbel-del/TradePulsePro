@@ -14,6 +14,7 @@ const state = {
     currentSymbol: null,
     currentInterval: '5m',
     realtimeInterval: null,
+    autoRefreshInterval: null,
     candleSeries: null,
     currentView: 'dashboard',
     watchlistData: [],
@@ -22,9 +23,22 @@ const state = {
     selectedExpertTimeframe: '5m',
     expertAnalysisData: null,
     dashboardFocusSymbol: null,
+    stockResearchLoaded: false,
+    requestSeq: {},
+    inFlight: {},
+    lastAutoRefresh: {},
+    lastSignalData: null,
 };
 
 const API_BASE = '';
+const AUTO_REFRESH_MS = {
+    price: 250,
+    chartData: 3000,
+    chartSignal: 3000,
+    expert: 5000,
+    dashboard: 10000,
+    watchlist: 10000,
+};
 
 // ==================== INIT ====================
 function checkAuth() {
@@ -32,7 +46,6 @@ function checkAuth() {
     const overlay = document.getElementById('loginOverlay');
     if (isAuth === 'true') {
         if (overlay) overlay.style.display = 'none';
-        if (document.getElementById('view-expert')) switchView('expert');
     } else {
         if (overlay) overlay.style.display = 'flex';
     }
@@ -57,11 +70,14 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(updateTime, 1000);
     loadDashboard();
     setupSearch();
+    setupStockResearch();
     initTradingViewTicker();
     loadMarketStatus();
     fetchIndexData();
     setInterval(fetchIndexData, 10000);
+    startAutoRefreshController();
     document.addEventListener('keydown', e => { if (e.key === 'Escape') closeChartModal(); });
+    if (window.location.hash === '#stock-research') switchView('stock-research');
 });
 
 // ==================== VIEW SWITCH ====================
@@ -74,6 +90,56 @@ function switchView(view) {
 
     if (view === 'scanner') loadWatchlistStatus();
     if (view === 'expert') loadQuickPicks();
+    if (view === 'stock-research') loadStockResearchPicks();
+}
+
+// ==================== AUTO REFRESH ====================
+function nextRequestId(key) {
+    state.requestSeq[key] = (state.requestSeq[key] || 0) + 1;
+    return state.requestSeq[key];
+}
+
+function isLatestRequest(key, id) {
+    return state.requestSeq[key] === id;
+}
+
+function shouldAutoRun(key, intervalMs) {
+    const now = Date.now();
+    if (state.inFlight[key]) return false;
+    if ((now - (state.lastAutoRefresh[key] || 0)) < intervalMs) return false;
+    state.lastAutoRefresh[key] = now;
+    return true;
+}
+
+function startAutoRefreshController() {
+    if (state.autoRefreshInterval) clearInterval(state.autoRefreshInterval);
+    state.autoRefreshInterval = setInterval(() => {
+        if (state.currentView === 'dashboard' && shouldAutoRun('dashboard', AUTO_REFRESH_MS.dashboard)) {
+            scanMarket({ silent: true, auto: true });
+        }
+        if (state.currentView === 'expert' && shouldAutoRun('expert', AUTO_REFRESH_MS.expert)) {
+            runExpertAnalysis({ silent: true, auto: true });
+        }
+        if (state.currentView === 'expert' && shouldAutoRun('quickPicks', AUTO_REFRESH_MS.watchlist)) {
+            loadQuickPicks({ silent: true, auto: true });
+        }
+        if (state.currentView === 'scanner' && shouldAutoRun('watchlist', AUTO_REFRESH_MS.watchlist)) {
+            loadWatchlistStatus({ silent: true, auto: true });
+        }
+        if (isChartModalOpen() && state.currentSymbol) {
+            if (shouldAutoRun('chartData', AUTO_REFRESH_MS.chartData)) {
+                refreshLightweightChartData(state.currentSymbol, state.currentInterval || '5m');
+            }
+            if (shouldAutoRun('chartSignal', AUTO_REFRESH_MS.chartSignal)) {
+                loadSignalPanel(state.currentSymbol, { silent: true, auto: true });
+            }
+        }
+    }, 500);
+}
+
+function isChartModalOpen() {
+    const modal = document.getElementById('chartModal');
+    return modal && modal.style.display !== 'none';
 }
 
 // ==================== TIME ====================
@@ -203,7 +269,7 @@ function setupSearch() {
         if (q.length >= 2) {
             debounceTimer = setTimeout(async () => {
                 try {
-                    const res = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(q)}`);
+                    const res = await fetch(`${API_BASE}/api/tradingview-search?q=${encodeURIComponent(q)}`);
                     const data = await res.json();
                     lastServerResults = data;
                     // Merge: local first, then server results not already in local
@@ -265,6 +331,342 @@ function normalizeDashboardSymbol(symbol) {
     return `${value}.NS`;
 }
 
+// ==================== STOCK RESEARCH ====================
+function setupStockResearch() {
+    const input = document.getElementById('researchSearchInput');
+    const suggestions = document.getElementById('researchSuggestions');
+    if (!input || !suggestions) return;
+
+    input.addEventListener('input', () => {
+        const q = input.value.trim();
+        if (!q) {
+            suggestions.classList.remove('active');
+            suggestions.innerHTML = '';
+            return;
+        }
+
+        const matches = localSearch(q).slice(0, 6);
+        if (!matches.length) {
+            suggestions.classList.remove('active');
+            suggestions.innerHTML = '';
+            return;
+        }
+
+        suggestions.innerHTML = matches.map(item => `
+            <button type="button" onclick="pickResearchSymbol('${escapeJsString(item.symbol)}')">
+                <span>${escapeHtml(item.name || item.symbol)}</span>
+                <strong>${escapeHtml(item.symbol)}</strong>
+            </button>
+        `).join('');
+        suggestions.classList.add('active');
+    });
+
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            runStockResearch();
+        }
+        if (e.key === 'Escape') {
+            suggestions.classList.remove('active');
+        }
+    });
+}
+
+function pickResearchSymbol(symbol) {
+    const input = document.getElementById('researchSearchInput');
+    const suggestions = document.getElementById('researchSuggestions');
+    if (input) input.value = symbol.replace('.NS', '').replace('.BO', '');
+    if (suggestions) suggestions.classList.remove('active');
+    runStockResearch(symbol);
+}
+
+async function runStockResearch(symbolOverride = null) {
+    const input = document.getElementById('researchSearchInput');
+    const status = document.getElementById('researchStatus');
+    const result = document.getElementById('researchResult');
+    const raw = (symbolOverride || input?.value || '').trim();
+    if (!raw) {
+        if (input) input.focus();
+        return;
+    }
+
+    status.textContent = `Analyzing ${raw.toUpperCase()} with Expert Engine...`;
+    status.className = 'research-status loading';
+    result.className = 'research-result-card loading';
+    result.innerHTML = `
+        <div style="display:flex; flex-direction:column; align-items:center; gap:16px; padding:40px;">
+            <div class="loading-spinner" style="width:40px; height:40px;"></div>
+            <div style="text-align:center;">
+                <div style="font-weight:700; margin-bottom:4px;">Building Research Summary</div>
+                <div style="font-size:0.8rem; color:var(--text-muted);">Consulting AI Council & Technical Rules...</div>
+            </div>
+        </div>
+    `;
+
+    try {
+        const quoteRes = await fetch(`${API_BASE}/api/search-stock/${encodeURIComponent(raw)}`);
+        const quote = await quoteRes.json();
+        if (!quoteRes.ok || !quote.valid) {
+            status.textContent = quote.error || 'Stock was not found.';
+            status.className = 'research-status error';
+            result.className = 'research-result-empty';
+            result.textContent = 'Try a ticker like RELIANCE, TCS, HDFCBANK, INFY, or SBIN.';
+            return;
+        }
+
+        // Call the High-Powered Expert Analysis Endpoint
+        const investment = parseFloat(document.getElementById('expertInvestmentInput')?.value) || 10000;
+        const expertRes = await fetch(`${API_BASE}/api/expert-analysis/${encodeURIComponent(quote.ticker)}?investment=${investment}`);
+        const expertData = await expertRes.json();
+
+        if (expertData.error) {
+            // Fallback to basic signal if expert fails
+            const signalRes = await fetch(`${API_BASE}/api/signal/${encodeURIComponent(quote.ticker)}?risk=${state.riskLevel}`);
+            const signal = await signalRes.json();
+            const summary = signal.error ? quoteToResearchSignal(quote) : signalToResearchSummary(quote, signal);
+            result.innerHTML = renderResearchResult(summary);
+        } else {
+            // Full Expert Dashboard in Research Tab
+            result.innerHTML = renderExpertResearch(quote, expertData);
+            if (expertData.expert_verdict) {
+                animateConfidenceRing(expertData.expert_verdict.confidence || 0);
+            }
+        }
+
+        status.textContent = `Updated ${quote.ticker}`;
+        status.className = 'research-status ok';
+        result.className = 'research-result-card';
+        saveRecentSearch(quote.ticker);
+    } catch (err) {
+        status.textContent = `Research failed: ${err.message}`;
+        status.className = 'research-status error';
+        result.className = 'research-result-empty';
+        result.textContent = 'The server could not complete this lookup. Please try again.';
+    }
+}
+
+function renderExpertResearch(quote, data) {
+    const sym = getCurrencySymbol();
+    const verdict = data.expert_verdict || {};
+    const pl = data.profit_loss || {};
+    const signalClass = getSignalClass(verdict.verdict || 'HOLD');
+    
+    // Header section with quote and verdict
+    let html = `
+        <div class="research-result-top" style="border-bottom: 1px solid var(--border); padding-bottom: 20px;">
+            <div class="research-symbol-block">
+                <div class="logo-wrapper">
+                    <img src="${escapeHtml(getLogoUrl(quote.ticker))}" class="stock-logo" onerror="handleLogoError(this)">
+                </div>
+                <div>
+                    <h3 style="margin:0; font-size:1.25rem;">${escapeHtml(quote.name)}</h3>
+                    <span style="font-family:'JetBrains Mono',monospace; opacity:0.6;">${escapeHtml(quote.ticker)}</span>
+                </div>
+            </div>
+            <div class="research-price-block">
+                <strong style="font-size:1.5rem;">${sym}${fmtNum(data.current_price || quote.price)}</strong>
+                <span class="${data.day_change >= 0 ? 'green' : 'red'}" style="font-weight:700;">${data.day_change > 0 ? '+' : ''}${fmtNum(data.day_change)}%</span>
+            </div>
+        </div>
+
+        <div style="margin-top: 24px;">
+            ${renderVerdictBanner(data)}
+        </div>
+
+        <div class="research-level-grid" style="margin-top:20px;">
+            <div><span>Recommended Entry</span><strong>${sym}${fmtNum(pl.entry || data.current_price)}</strong></div>
+            <div><span>Primary Target</span><strong class="green">${sym}${fmtNum(pl.exit?.price_target || (pl.entry ? pl.entry * 1.02 : data.current_price * 1.02))}</strong></div>
+            <div><span>Stop Loss</span><strong class="red">${sym}${fmtNum(data.stop_loss_price || pl.stop_loss || data.current_price * 0.98)}</strong></div>
+            <div><span>R:R Ratio</span><strong class="yellow">${pl.risk_reward_ratio || '1.5'}</strong></div>
+        </div>
+    `;
+
+    // Timeframe Predictions (The "Full" thing)
+    if (data.trades || data.time_predictions) {
+        const trades = data.trades || {};
+        const preds = data.time_predictions || {};
+        html += `
+            <div class="expert-section" style="background: rgba(255,255,255,0.02); border-radius: 12px; padding: 16px; margin: 20px 0;">
+                <h4 class="expert-section-title" style="margin-bottom:12px;">⏰ Multi-Timeframe Outlook</h4>
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px;">
+                    ${['1m','5m','15m','1h','1d'].map(tf => {
+                        const pred = preds[tf];
+                        const trade = trades[tf];
+                        if (!pred && !trade) return '';
+                        const color = pred === 'UP' ? 'var(--green)' : (pred === 'DOWN' ? 'var(--red)' : 'var(--text-secondary)');
+                        return `
+                            <div style="background:var(--bg-primary); border:1px solid var(--border); border-radius:8px; padding:10px; text-align:center;">
+                                <div style="font-size:0.75rem; font-weight:800; color:var(--text-muted); margin-bottom:4px;">${tf.toUpperCase()}</div>
+                                <div style="font-size:1.15rem; font-weight:800; color:${color}">${pred || (trade?.action || '—')}</div>
+                                <div style="font-size:0.65rem; color:var(--text-dim); margin-top:2px;">Target: ${sym}${fmtNum(trade?.target || 0)}</div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            </div>
+        `;
+    }
+
+    // AI Council / Meta Ensemble
+    const meta = data.meta_ensemble;
+    if (meta) {
+        html += `
+            <div class="expert-section" style="margin-top:24px;">
+                <h4 class="expert-section-title">🗳️ AI Expert Consensus</h4>
+                <div class="score-bar-container" style="margin-bottom:12px;">
+                    <div class="score-bar-label">
+                        <span style="color:var(--green)">BUY ${meta.fused_buy_pct}%</span>
+                        <span style="color:var(--text-secondary)">Consensus: ${meta.consensus_pct}%</span>
+                        <span style="color:var(--red)">SELL ${meta.fused_sell_pct}%</span>
+                    </div>
+                    <div class="score-bar-track">
+                        <div class="score-bar-buy" style="width:${meta.fused_buy_pct}%"></div>
+                        <div class="score-bar-sell" style="width:${meta.fused_sell_pct}%"></div>
+                    </div>
+                </div>
+                <div class="research-reason">${meta.final_verdict}: Consensus among ${meta.active_models} specialized AI models suggests a ${meta.consensus_pct >= 60 ? 'high-confidence' : 'moderate'} ${meta.final_verdict} stance.</div>
+            </div>
+        `;
+    }
+
+    // Indicators and Actions
+    html += `
+        <div class="expert-section" style="margin-top:24px;">
+            <h4 class="expert-section-title">📊 Key Technical Score</h4>
+            <div class="indicators-chip-grid">
+                ${Object.entries(data.indicators || {}).slice(0, 12).map(([k,v]) => `
+                    <div class="indicator-chip">
+                        <div class="indicator-name">${k.toUpperCase().replace(/_/g, ' ')}</div>
+                        <div class="indicator-value">${typeof v === 'number' ? fmtNum(v) : v}</div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+
+        <div class="research-actions" style="margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--border);">
+            <button class="chart-btn" onclick="openChartModal('${escapeJsString(quote.ticker)}')">Live Chart</button>
+            <button class="predict-btn" onclick="openExpertForSymbol('${escapeJsString(quote.ticker)}')">Expert View</button>
+            <button class="scan-all-btn" onclick="openDashboardForSymbol('${escapeJsString(quote.ticker)}')">Pin to Dashboard</button>
+        </div>
+    `;
+
+    return html;
+}
+
+
+function quoteToResearchSignal(quote) {
+    return {
+        symbol: quote.ticker,
+        name: quote.name || quote.ticker,
+        price: quote.price || 0,
+        change_pct: 0,
+        signal: 'HOLD',
+        confidence: 0,
+        entry_price: quote.price || 0,
+        target_price: quote.price || 0,
+        stop_loss: quote.price || 0,
+        expected_profit_pct: 0,
+        risk_reward_ratio: 0,
+        reason: 'Quote found. Signal engine unavailable.',
+    };
+}
+
+function signalToResearchSummary(quote, signal) {
+    const price = signal.price ?? signal.current_price ?? quote.price ?? 0;
+    return {
+        symbol: signal.symbol || quote.ticker,
+        name: signal.name || quote.name || quote.ticker,
+        price,
+        change_pct: signal.change_pct ?? signal.day_change ?? 0,
+        signal: signal.signal || 'HOLD',
+        confidence: signal.confidence ?? 0,
+        entry_price: signal.entry_price ?? signal.entry ?? price,
+        target_price: signal.target_price ?? signal.target ?? price,
+        stop_loss: signal.stop_loss ?? price,
+        expected_profit_pct: signal.expected_profit_pct ?? 0,
+        risk_reward_ratio: signal.risk_reward_ratio ?? 0,
+        reason: signal.recommendation?.summary || signal.signal_strength || 'TradePulse signal consensus',
+    };
+}
+
+function renderResearchResult(data) {
+    const sym = getCurrencySymbol();
+    const signalClass = getSignalClass(data.signal);
+    const confidence = data.confidence <= 1 ? data.confidence * 100 : data.confidence;
+    const changeClass = data.change_pct >= 0 ? 'green' : 'red';
+
+    return `
+        <div class="research-result-top">
+            <div class="research-symbol-block">
+                <div class="logo-wrapper">
+                    <img src="${escapeHtml(getLogoUrl(data.symbol))}" class="stock-logo" onerror="handleLogoError(this)">
+                    <div class="symbol-avatar" style="display:none;">${escapeHtml(data.symbol[0] || '?')}</div>
+                </div>
+                <div>
+                    <h3>${escapeHtml(data.name)}</h3>
+                    <span>${escapeHtml(data.symbol)}</span>
+                </div>
+            </div>
+            <div class="research-price-block">
+                <strong>${sym}${fmtNum(data.price)}</strong>
+                <span class="${changeClass}">${data.change_pct > 0 ? '+' : ''}${fmtNum(data.change_pct)}%</span>
+            </div>
+        </div>
+        <div class="research-verdict-row">
+            <span class="signal-badge ${signalClass}">${escapeHtml(data.signal)}</span>
+            <span>${Math.round(confidence || 0)}% confidence</span>
+            <span>R:R ${data.risk_reward_ratio || 0}</span>
+        </div>
+        <div class="research-level-grid">
+            <div><span>Entry</span><strong>${sym}${fmtNum(data.entry_price)}</strong></div>
+            <div><span>Target</span><strong class="green">${sym}${fmtNum(data.target_price)}</strong></div>
+            <div><span>Stop Loss</span><strong class="red">${sym}${fmtNum(data.stop_loss)}</strong></div>
+            <div><span>Profit</span><strong>${fmtNum(data.expected_profit_pct)}%</strong></div>
+        </div>
+        <div class="research-reason">${escapeHtml(data.reason)}</div>
+        <div class="research-actions">
+            <button class="chart-btn" onclick="openChartModal('${escapeJsString(data.symbol)}')">Chart</button>
+            <button class="predict-btn" onclick="openExpertForSymbol('${escapeJsString(data.symbol)}')">Expert Analysis</button>
+            <button class="scan-all-btn" onclick="openDashboardForSymbol('${escapeJsString(data.symbol)}')">Add To Dashboard</button>
+        </div>
+    `;
+}
+
+async function loadStockResearchPicks(force = false) {
+    const grid = document.getElementById('researchIdeasGrid');
+    if (!grid || (state.stockResearchLoaded && !force)) return;
+
+    grid.innerHTML = '<div class="loading-placeholder">Loading ideas...</div>';
+    try {
+        const res = await fetch(`${API_BASE}/api/watchlist-status`);
+        const data = await res.json();
+        if (data.error) {
+            grid.innerHTML = `<div class="loading-placeholder">${escapeHtml(data.error)}</div>`;
+            return;
+        }
+        const picks = (data.top_picks && data.top_picks.length ? data.top_picks : data.market_data || []).slice(0, 8);
+        grid.innerHTML = picks.length
+            ? picks.map(renderResearchIdeaCard).join('')
+            : '<div class="loading-placeholder">No clear setups right now.</div>';
+        state.stockResearchLoaded = true;
+    } catch (e) {
+        grid.innerHTML = '<div class="loading-placeholder">Unable to load ideas.</div>';
+    }
+}
+
+function renderResearchIdeaCard(stock) {
+    const signalClass = getSignalClass(stock.signal);
+    const sym = getCurrencySymbol();
+    return `
+        <button class="research-idea-card ${signalClass}" onclick="pickResearchSymbol('${escapeJsString(stock.symbol)}')">
+            <span class="research-idea-symbol">${escapeHtml(stock.symbol.replace('.NS', ''))}</span>
+            <span class="signal-badge ${signalClass}">${escapeHtml(stock.signal || 'HOLD')}</span>
+            <strong>${sym}${fmtNum(stock.price)}</strong>
+            <small>${escapeHtml(stock.reason || 'TradePulse setup')}</small>
+        </button>
+    `;
+}
+
 // ==================== RISK / MARKET ====================
 function setRiskLevel(level) {
     state.riskLevel = level;
@@ -305,24 +707,35 @@ async function loadDashboard() {
     }
 }
 
-async function scanMarket() {
+async function scanMarket(options = {}) {
+    if (state.inFlight.dashboard) return;
+    state.inFlight.dashboard = true;
+    const reqId = nextRequestId('dashboard');
     const btn = document.getElementById('scanBtn');
-    btn.innerHTML = `<span>⏳</span> Scanning...`;
-    btn.disabled = true;
+    if (!options.silent) {
+        btn.innerHTML = `<span>⏳</span> Scanning...`;
+        btn.disabled = true;
+    }
 
     try {
         const res = await fetch(`${API_BASE}/api/scan?market=${state.market}&risk=${state.riskLevel}`);
         const data = await res.json();
+        if (!isLatestRequest('dashboard', reqId)) return;
         const signals = data.signals || [];
         renderStockTable(signals);
         updateOverallStats(signals);
         if (state.dashboardFocusSymbol && !signals.some(s => s.symbol === state.dashboardFocusSymbol)) {
             loadDashboardFocusSignal(state.dashboardFocusSymbol);
         }
-    } catch (e) { console.error(e); }
-
-    btn.innerHTML = `<span>🔄</span> Scan Market`;
-    btn.disabled = false;
+    } catch (e) {
+        console.error(e);
+    } finally {
+        if (!options.silent) {
+            btn.innerHTML = `<span>🔄</span> Scan Market`;
+            btn.disabled = false;
+        }
+        state.inFlight.dashboard = false;
+    }
 }
 
 function updateOverallStats(signals) {
@@ -510,11 +923,22 @@ function renderStockTable(stocks) {
 }
 
 // ==================== EXPERT ANALYSIS ====================
-async function loadQuickPicks() {
+async function loadQuickPicks(options = {}) {
+    if (state.inFlight.quickPicks) return;
+    state.inFlight.quickPicks = true;
+    const reqId = nextRequestId('quickPicks');
     const grid = document.getElementById('quickPicksGrid');
+    if (!grid) {
+        state.inFlight.quickPicks = false;
+        return;
+    }
+    if (!options.silent && !grid.innerHTML.trim()) {
+        grid.innerHTML = '<div class="loading-placeholder">Loading watchlist...</div>';
+    }
     try {
         const res = await fetch(`${API_BASE}/api/watchlist-status`);
         const data = await res.json();
+        if (!isLatestRequest('quickPicks', reqId)) return;
         if (data.error) { grid.innerHTML = `<div class="loading-placeholder">${data.error}</div>`; return; }
 
         state.watchlistData = data.market_data || [];
@@ -531,6 +955,8 @@ async function loadQuickPicks() {
         }
     } catch (e) {
         grid.innerHTML = `<div class="loading-placeholder">Failed to load watchlist. Make sure server is running.</div>`;
+    } finally {
+        state.inFlight.quickPicks = false;
     }
 }
 
@@ -555,29 +981,48 @@ function openExpertForSymbol(symbol, preferredInterval = state.selectedExpertTim
     closeChartModal();
     switchView('expert');
     state.selectedExpertTimeframe = preferredInterval;
+    syncExpertRequestTimeframeButtons(preferredInterval);
     const clean = symbol.replace('.NS', '').replace('.BO', '').replace('-USD', '');
     document.getElementById('expertSymbolInput').value = clean;
     runExpertAnalysis();
 }
 
-async function runExpertAnalysis() {
+function setExpertRequestTimeframe(interval) {
+    state.selectedExpertTimeframe = interval;
+    syncExpertRequestTimeframeButtons(interval);
+    runExpertAnalysis();
+}
+
+function syncExpertRequestTimeframeButtons(interval) {
+    document.querySelectorAll('.expert-request-tf-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.interval === interval);
+    });
+}
+
+async function runExpertAnalysis(options = {}) {
     const symbolRaw = document.getElementById('expertSymbolInput').value.trim();
     if (!symbolRaw) return;
+    if (state.inFlight.expert) return;
+    state.inFlight.expert = true;
+    const reqId = nextRequestId('expert');
 
     const investment = parseFloat(document.getElementById('expertInvestmentInput').value) || 10000;
     const loading = document.getElementById('expertLoadingPanel');
     const results = document.getElementById('expertResultsPanel');
     const btn = document.getElementById('btnRunExpert');
 
-    btn.disabled = true;
-    btn.textContent = '⏳ Analyzing...';
-    loading.style.display = 'flex';
-    results.style.display = 'none';
+    if (!options.silent) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Analyzing...';
+        loading.style.display = 'flex';
+        results.style.display = 'none';
+    }
 
     try {
         const interval = state.selectedExpertTimeframe || '5m';
         const res = await fetch(`${API_BASE}/api/expert-analysis/${encodeURIComponent(symbolRaw)}?investment=${investment}&interval=${encodeURIComponent(interval)}`);
         const data = await res.json();
+        if (!isLatestRequest('expert', reqId)) return;
 
         loading.style.display = 'none';
 
@@ -593,17 +1038,20 @@ async function runExpertAnalysis() {
         loading.style.display = 'none';
         results.style.display = 'block';
         results.innerHTML = `<div class="expert-error">⚠️ Failed to connect to expert engine</div>`;
+    } finally {
+        if (!options.silent) {
+            btn.disabled = false;
+            btn.textContent = '🧠 Run Expert Analysis';
+        }
+        state.inFlight.expert = false;
     }
-
-    btn.disabled = false;
-    btn.textContent = '🧠 Run Expert Analysis';
 }
 
 function renderExpertHTML(data) {
     const sym = getCurrencySymbol();
     state.expertAnalysisData = data;
 
-    const timeframes = data.timeframes || [];
+        const timeframes = getExpertProjectionTimeframes(data);
     if (timeframes.length > 0) {
         state.expertTimeframes = timeframes;
         const preferred = data.requested_interval || state.selectedExpertTimeframe || data.primary_interval || '5m';
@@ -616,6 +1064,7 @@ function renderExpertHTML(data) {
     }
 
     const selectedAnalysis = getProjectionForInterval(state.selectedExpertTimeframe);
+    syncExpertRequestTimeframeButtons(state.selectedExpertTimeframe);
     const v = selectedAnalysis.expert_verdict || data.expert_verdict || {};
     const ind = selectedAnalysis.indicators || data.indicators || {};
     let html = `<div id="expertVerdictMount">${renderVerdictBanner(selectedAnalysis)}</div>`;
@@ -791,7 +1240,7 @@ function getProjectionForInterval(interval) {
 }
 
 function renderProjectionSection(data) {
-    const timeframes = data.timeframes || [];
+    const timeframes = getExpertProjectionTimeframes(data);
     const selected = getProjectionForInterval(state.selectedExpertTimeframe);
     const tabs = timeframes.length > 0 ? `
         <div class="expert-tf-tabs projection-tabs" role="tablist" aria-label="Profit projection timeframes">
@@ -818,6 +1267,23 @@ function renderProjectionSection(data) {
             <div id="plProjectionContent">${renderProjectionCards(selected)}</div>
         </div>
     `;
+}
+
+function getExpertProjectionTimeframes(data) {
+    const native = data.timeframes || [];
+    if (native.length) return native;
+    const primary = data.primary_interval || data.requested_interval || state.selectedExpertTimeframe || '5m';
+    const baseProjection = {
+        interval: primary,
+        verdict: data.expert_verdict?.verdict || 'HOLD',
+        confidence: data.expert_verdict?.confidence || 0,
+        current_price: data.current_price || 0,
+        day_change: data.day_change || 0,
+        indicators: data.indicators || {},
+        profit_loss: data.profit_loss || {},
+        expert_verdict: data.expert_verdict || {},
+    };
+    return [baseProjection];
 }
 
 function renderProjectionPill(projection) {
@@ -936,15 +1402,25 @@ function setExpertTimeframe(interval) {
 }
 
 // ==================== WATCHLIST / SCANNER ====================
-async function loadWatchlistStatus() {
+async function loadWatchlistStatus(options = {}) {
+    if (state.inFlight.watchlist) return;
+    state.inFlight.watchlist = true;
+    const reqId = nextRequestId('watchlist');
     const container = document.getElementById('watchlistOpportunities');
     const tbody = document.getElementById('watchlistTableBody');
-    container.innerHTML = '<div class="loading-placeholder">Analyzing market data...</div>';
-    tbody.innerHTML = '';
+    if (!container || !tbody) {
+        state.inFlight.watchlist = false;
+        return;
+    }
+    if (!options.silent) {
+        container.innerHTML = '<div class="loading-placeholder">Analyzing market data...</div>';
+        tbody.innerHTML = '';
+    }
 
     try {
         const res = await fetch(`${API_BASE}/api/watchlist-status`);
         const data = await res.json();
+        if (!isLatestRequest('watchlist', reqId)) return;
 
         if (data.error) {
             container.innerHTML = `<div class="loading-placeholder">${data.error}</div>`;
@@ -999,6 +1475,8 @@ async function loadWatchlistStatus() {
         });
     } catch (e) {
         container.innerHTML = `<div class="loading-placeholder">Failed to load. Server might be unavailable.</div>`;
+    } finally {
+        state.inFlight.watchlist = false;
     }
 }
 
@@ -1012,6 +1490,7 @@ function setChartIntervalActive(interval) {
 async function openChartModal(symbol) {
     state.currentSymbol = symbol;
     state.currentInterval = '5m';
+    state.lastSignalData = null;
 
     // Reset toolbar buttons
     setChartIntervalActive('5m');
@@ -1049,6 +1528,7 @@ function changeChartInterval(interval) {
     if (state.currentInterval === interval) return;
     state.currentInterval = interval;
     state.selectedExpertTimeframe = interval;
+    state.lastSignalData = null;
     setChartIntervalActive(interval);
 
     // Re-fetch and re-render the chart with the new interval
@@ -1107,48 +1587,113 @@ async function renderLightweightChart(symbol, interval = '5m') {
         const dScale = state.macdChart.timeScale();
         mScale.subscribeVisibleLogicalRangeChange(r => { if(r) { rScale.setVisibleLogicalRange(r); dScale.setVisibleLogicalRange(r); }});
         
-        try {
-            const periodMap = { '1m': '1d', '3m': '5d', '5m': '5d', '15m': '5d', '30m': '1mo', '1h': '1mo', '1d': '1y' };
-            const reqPeriod = periodMap[interval] || '5d';
-            const res = await fetch(`${API_BASE}/api/stock-data/${encodeURIComponent(symbol)}?period=${reqPeriod}&interval=${interval}&markers=true`);
-            const data = await res.json();
-            if (data && data.data && data.data.length > 0) {
-                state.lastChartData = data.data;
-                state.candleSeries.setData(data.data);
-                if (data.markers) state.candleSeries.setMarkers(data.markers);
-
-                const rsiData = data.data.filter(d => d.rsi != null).map(d => ({time: d.time, value: d.rsi}));
-                if (rsiData.length) state.rsiSeries.setData(rsiData);
-
-                const mData = data.data.filter(d => d.macd != null).map(d => ({time: d.time, value: d.macd}));
-                const sData = data.data.filter(d => d.macd_signal != null).map(d => ({time: d.time, value: d.macd_signal}));
-                const hData = data.data.filter(d => d.macd_hist != null).map(d => ({time: d.time, value: d.macd_hist, color: d.macd_hist > 0 ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'}));
-                
-                if (mData.length) state.macdSeries.setData(mData);
-                if (sData.length) state.macdSignalSeries.setData(sData);
-                if (hData.length) state.macdHistSeries.setData(hData);
-
-                state.currentChart.timeScale().fitContent();
-            }
-        } catch(e) {}
+        await refreshLightweightChartData(symbol, interval, { fit: true });
     }
 }
 
+async function refreshLightweightChartData(symbol, interval = '5m', options = {}) {
+    if (!state.candleSeries) return;
+    if (state.inFlight.chartData) return;
+    state.inFlight.chartData = true;
+    const reqId = nextRequestId('chartDataFetch');
+    try {
+        const periodMap = { '1m': '1d', '3m': '5d', '5m': '5d', '15m': '5d', '30m': '1mo', '1h': '1mo', '1d': '1y', '10d': '10d' };
+        const reqPeriod = periodMap[interval] || '5d';
+        const res = await fetch(`${API_BASE}/api/stock-data/${encodeURIComponent(symbol)}?period=${reqPeriod}&interval=${interval}`);
+        const data = await res.json();
+        if (!isLatestRequest('chartDataFetch', reqId)) return;
+        if (data && data.data && data.data.length > 0) {
+            const heikinAshiData = toHeikinAshiCandles(data.data);
+            state.lastChartData = heikinAshiData;
+            state.candleSeries.setData(heikinAshiData);
+            updateChartSignalMarker(state.lastSignalData);
+
+            const rsiData = data.data.filter(d => d.rsi != null).map(d => ({time: d.time, value: d.rsi}));
+            if (rsiData.length) state.rsiSeries.setData(rsiData);
+
+            const mData = data.data.filter(d => d.macd != null).map(d => ({time: d.time, value: d.macd}));
+            const sData = data.data.filter(d => d.macd_signal != null).map(d => ({time: d.time, value: d.macd_signal}));
+            const hData = data.data.filter(d => d.macd_hist != null).map(d => ({time: d.time, value: d.macd_hist, color: d.macd_hist > 0 ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'}));
+
+            if (mData.length) state.macdSeries.setData(mData);
+            if (sData.length) state.macdSignalSeries.setData(sData);
+            if (hData.length) state.macdHistSeries.setData(hData);
+
+            if (options.fit && state.currentChart) state.currentChart.timeScale().fitContent();
+        }
+    } catch(e) {
+    } finally {
+        state.inFlight.chartData = false;
+    }
+}
+
+function toHeikinAshiCandles(candles) {
+    const result = [];
+    candles.forEach((candle, index) => {
+        const haClose = (candle.open + candle.high + candle.low + candle.close) / 4;
+        const prev = result[index - 1];
+        const haOpen = prev ? (prev.open + prev.close) / 2 : (candle.open + candle.close) / 2;
+        result.push({
+            ...candle,
+            open: roundChartPrice(haOpen),
+            high: roundChartPrice(Math.max(candle.high, haOpen, haClose)),
+            low: roundChartPrice(Math.min(candle.low, haOpen, haClose)),
+            close: roundChartPrice(haClose),
+        });
+    });
+    return result;
+}
+
+function roundChartPrice(value) {
+    return Math.round((Number(value) || 0) * 10000) / 10000;
+}
+
 // ==================== SIGNAL & AI ====================
-async function loadSignalPanel(symbol) {
+async function loadSignalPanel(symbol, options = {}) {
+    if (state.inFlight.chartSignal) return;
+    state.inFlight.chartSignal = true;
+    const reqId = nextRequestId('chartSignal');
     const content = document.getElementById('chartSignalContent');
     const loading = document.getElementById('chartSignalLoading');
-    if (loading) loading.style.display = 'flex';
-    if (content) content.style.display = 'none';
+    if (!options.silent) {
+        if (loading) loading.style.display = 'flex';
+        if (content) content.style.display = 'none';
+    }
     try {
         const res = await fetch(`${API_BASE}/api/signal/${encodeURIComponent(symbol)}?risk=${state.riskLevel}&interval=${encodeURIComponent(state.currentInterval || '5m')}`);
         const sig = await res.json();
-        document.getElementById('chartSignalLoading').style.display = 'none';
+        if (!isLatestRequest('chartSignal', reqId)) return;
+        state.lastSignalData = sig;
+        updateChartSignalMarker(sig);
+        if (loading) loading.style.display = 'none';
         content.style.display = 'block';
         content.innerHTML = generateSignalHTML(sig);
     } catch (e) {
         content.innerHTML = `<div class="error-msg">Signal Analysis Unavailable</div>`;
+    } finally {
+        state.inFlight.chartSignal = false;
     }
+}
+
+function updateChartSignalMarker(sig) {
+    if (!state.candleSeries || !state.lastChartData || !state.lastChartData.length || !sig || sig.error) return;
+    const signal = String(sig.signal || 'HOLD').toUpperCase();
+    if (!signal.includes('BUY') && !signal.includes('SELL')) {
+        state.candleSeries.setMarkers([]);
+        return;
+    }
+
+    const lastBar = state.lastChartData[state.lastChartData.length - 1];
+    const isBuy = signal.includes('BUY');
+    const entry = sig.entry_price || sig.entry || sig.current_price || sig.price || lastBar.close;
+    state.candleSeries.setMarkers([{
+        time: lastBar.time,
+        position: isBuy ? 'belowBar' : 'aboveBar',
+        color: isBuy ? '#10b981' : '#ef4444',
+        shape: isBuy ? 'arrowUp' : 'arrowDown',
+        text: `${signal} @ ${fmtNum(entry)}`,
+        size: 2,
+    }]);
 }
 
 function generateSignalHTML(sig) {
@@ -1186,12 +1731,17 @@ async function loadAiAnalysis(symbol) {
 function startRealtimeTicker(symbol) {
     stopRealtimeTicker();
     fetchRealtimePrice(symbol);
-    state.realtimeInterval = setInterval(() => fetchRealtimePrice(symbol), 3000);
+    state.realtimeInterval = setInterval(() => fetchRealtimePrice(symbol), AUTO_REFRESH_MS.price);
 }
 
-function stopRealtimeTicker() { if (state.realtimeInterval) clearInterval(state.realtimeInterval); }
+function stopRealtimeTicker() {
+    if (state.realtimeInterval) clearInterval(state.realtimeInterval);
+    state.realtimeInterval = null;
+}
 
 async function fetchRealtimePrice(symbol) {
+    if (state.inFlight.price) return;
+    state.inFlight.price = true;
     try {
         const res = await fetch(`${API_BASE}/api/realtime/${encodeURIComponent(symbol)}`);
         const d = await res.json();
@@ -1218,7 +1768,10 @@ async function fetchRealtimePrice(symbol) {
                 state.candleSeries.update(lastBar);
             }
         }
-    } catch(e) {}
+    } catch(e) {
+    } finally {
+        state.inFlight.price = false;
+    }
 }
 
 function closeChartModal(event) {

@@ -92,8 +92,9 @@ def get_stock_data(symbol, period='5d', interval='5m'):
     
     try:
         ticker = yf.Ticker(symbol)
-        fetch_interval = '1m' if interval == '3m' else interval
-        df = ticker.history(period=period, interval=fetch_interval)
+        fetch_interval = '1m' if interval == '3m' else ('1d' if interval == '10d' else interval)
+        fetch_period = '10d' if interval == '10d' else period
+        df = ticker.history(period=fetch_period, interval=fetch_interval)
         
         if df.empty:
             logger.warning(f"No data returned for {symbol}")

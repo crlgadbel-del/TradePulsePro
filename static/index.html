@@ -42,7 +42,7 @@
                         <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                     </svg>
                     <input type="text" class="search-input" id="searchInput"
-                           placeholder="Search company name, e.g. Reliance Industries"
+                           placeholder="Search TradingView symbols, e.g. RELIANCE"
                            autocomplete="off">
                     <button class="search-submit-btn" id="searchSubmitBtn" onclick="triggerSearch()" title="Search">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
@@ -111,6 +111,9 @@
             </button>
             <button class="nav-tab" onclick="switchView('scanner')" id="nav-scanner">
                 Market Scanner
+            </button>
+            <button class="nav-tab" onclick="switchView('stock-research')" id="nav-stock-research">
+                Stock Research
             </button>
         </div>
 
@@ -200,6 +203,16 @@
                         <label>Investment (₹)</label>
                         <input type="number" id="expertInvestmentInput" value="10000" min="1000" step="1000">
                     </div>
+                    <div class="expert-input-field">
+                        <label>Timeframe</label>
+                        <div class="tf-group" style="height:40px;align-items:center;">
+                            <button class="nav-tab expert-request-tf-btn" data-interval="1m" onclick="setExpertRequestTimeframe('1m')" type="button">1m</button>
+                            <button class="nav-tab expert-request-tf-btn active" data-interval="5m" onclick="setExpertRequestTimeframe('5m')" type="button">5m</button>
+                            <button class="nav-tab expert-request-tf-btn" data-interval="15m" onclick="setExpertRequestTimeframe('15m')" type="button">15m</button>
+                            <button class="nav-tab expert-request-tf-btn" data-interval="1d" onclick="setExpertRequestTimeframe('1d')" type="button">1d</button>
+                            <button class="nav-tab expert-request-tf-btn" data-interval="10d" onclick="setExpertRequestTimeframe('10d')" type="button">10d</button>
+                        </div>
+                    </div>
                     <button class="btn-run-expert" id="btnRunExpert" onclick="runExpertAnalysis()">
                         Run Expert Analysis
                     </button>
@@ -238,6 +251,45 @@
                             </tr></thead>
                             <tbody id="watchlistTableBody"></tbody>
                         </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ============ VIEW 4: STOCK RESEARCH ============ -->
+        <div id="view-stock-research" class="view-panel">
+            <div class="stock-research-shell">
+                <div class="stock-research-header">
+                    <div>
+                        <h2 class="section-title">Stock Research</h2>
+                        <p class="expert-subtitle-text">Fast quote lookup with TradePulse signal, entry, target, stop loss, chart, and expert analysis in one place.</p>
+                    </div>
+                    <button class="scan-button" onclick="loadStockResearchPicks(true)">Refresh Ideas</button>
+                </div>
+
+                <div class="stock-research-search">
+                    <div class="research-input-wrap">
+                        <svg class="search-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="11" cy="11" r="8"></circle>
+                            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                        </svg>
+                        <input type="text" id="researchSearchInput" placeholder="Search ticker or company, e.g. RELIANCE" autocomplete="off">
+                        <button class="research-search-btn" id="researchSearchBtn" onclick="runStockResearch()">Analyze</button>
+                    </div>
+                    <div id="researchSuggestions" class="research-suggestions"></div>
+                    <div id="researchStatus" class="research-status"></div>
+                </div>
+
+                <div id="researchResult" class="research-result-empty">
+                    Search any NSE/BSE stock to view the current quote and trading levels.
+                </div>
+
+                <div class="research-grid-section">
+                    <div class="scanner-header-row">
+                        <h3 class="subsection-title">Current TradePulse Ideas</h3>
+                    </div>
+                    <div id="researchIdeasGrid" class="research-ideas-grid">
+                        <div class="loading-placeholder">Loading ideas...</div>
                     </div>
                 </div>
             </div>
@@ -291,6 +343,7 @@
                         <button class="nav-tab tf-btn" onclick="changeChartInterval('30m')">30m</button>
                         <button class="nav-tab tf-btn" onclick="changeChartInterval('1h')">1h</button>
                         <button class="nav-tab tf-btn" onclick="changeChartInterval('1d')">1d</button>
+                        <button class="nav-tab tf-btn" onclick="changeChartInterval('10d')">10d</button>
                     </div>
                 </div>
 

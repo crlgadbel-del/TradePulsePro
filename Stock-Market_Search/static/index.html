@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Antigravity TradeAI — Expert System</title>
+    <title>Antigravity TradeAI — Hybrid Expert System</title>
     <meta name="description" content="AI-powered expert trading system with profit/loss analysis, technical indicators, and intelligent trade recommendations for NSE stocks.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,10 +20,27 @@
                 <div class="brand">Antigravity TradeAI</div>
                 <div class="brand-tag">Expert System</div>
             </div>
-            <div class="refresh-timer">
-                <span class="live-indicator"></span> Market Live <span id="clock">--:--</span>
+            <div style="display:flex;align-items:center;gap:14px;">
+                <a class="dashboard-link" href="/">Dashboard</a>
+                <div class="refresh-timer">
+                    <span class="live-indicator"></span> Market Live <span id="clock">--:--</span>
+                </div>
+                <button id="btn-settings" class="btn-settings" title="AI Model Settings">⚙️</button>
             </div>
         </header>
+
+        <!-- ═══ STOCK SEARCH BAR ═══ -->
+        <div class="search-section">
+            <div class="search-wrapper">
+                <span class="search-icon-glyph">🔍</span>
+                <input type="text" id="stock-search-input"
+                       placeholder="Search any NSE/BSE stock... (e.g. ZOMATO, PAYTM, NAUKRI, DMART)"
+                       autocomplete="off" spellcheck="false">
+                <button id="btn-stock-search" class="btn-search">Analyze</button>
+            </div>
+            <div id="search-suggestions" class="search-suggestions"></div>
+            <div id="search-status" class="search-status"></div>
+        </div>
 
         <!-- Top Opportunities -->
         <section>
@@ -69,7 +86,17 @@
                 <div class="modal-header">
                     <div>
                         <h2 id="modal-title">STOCK NAME</h2>
-                        <div id="modal-price" class="stock-price-large">₹0.00</div>
+                        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                            <div id="modal-price" class="stock-price-large">₹0.00</div>
+                            <span id="live-dot" title="Live price polling every 10s"
+                                  style="display:inline-block;width:9px;height:9px;border-radius:50%;
+                                         background:var(--accent-green);box-shadow:0 0 6px var(--accent-green);
+                                         transition:opacity .3s;"></span>
+                            <span id="analyse-countdown"
+                                  style="font-size:0.75rem;color:var(--text-secondary);opacity:0.7;">
+                                Auto-refresh in 60s
+                            </span>
+                        </div>
                     </div>
                     <span class="close-modal" id="close-modal-btn">&times;</span>
                 </div>
@@ -90,19 +117,19 @@
                             <div class="expert-icon">🧠</div>
                             <div>
                                 <h3>Expert System Analysis</h3>
-                                <p class="expert-subtitle">Multi-indicator rule-based verdict with P/L projection</p>
+                                <p class="expert-subtitle">Hybrid: Rule Engine (40%) + ML Ensemble (40%) + Linear Regression (20%)</p>
                             </div>
                         </div>
                         <div class="expert-input-row">
                             <label for="investment-input">Investment (₹)</label>
                             <input type="number" id="investment-input" value="10000" min="1000" step="1000">
-                            <button id="btn-run-expert" class="btn-expert">Run Analysis</button>
+                            <button id="btn-run-expert" class="btn-expert">Re-Analyse Now</button>
                         </div>
                     </div>
 
                     <div id="expert-loading" class="expert-loading" style="display:none;">
                         <div class="spinner"></div>
-                        <span>Running expert rules engine...</span>
+                        <span>Training ML models &amp; running hybrid analysis...</span>
                     </div>
 
                     <div id="expert-results" style="display:none;">
@@ -121,6 +148,134 @@
                                     <div class="confidence-val" id="confidence-val">0%</div>
                                 </div>
                                 <div class="confidence-label">Confidence</div>
+                            </div>
+                        </div>
+
+                        <!-- ═══ INTRADAY TIMING INTELLIGENCE ═══ -->
+                        <div id="timing-panel" class="timing-panel">
+                            <div class="timing-header">
+                                <div class="timing-icon-wrap">⏰</div>
+                                <div class="timing-title-block">
+                                    <div class="timing-title">Intraday Timing Intelligence</div>
+                                    <div class="timing-subtitle" id="timing-session-name">Detecting market session...</div>
+                                </div>
+                                <div class="timing-meta">
+                                    <div class="timing-market-status" id="timing-market-status">—</div>
+                                    <div class="timing-remaining" id="timing-remaining">—</div>
+                                </div>
+                            </div>
+
+                            <!-- Action Boxes -->
+                            <div class="timing-boxes">
+                                <div class="timing-box timing-entry">
+                                    <div class="tbox-label">📥 Entry</div>
+                                    <div class="tbox-time" id="t-entry-time">—</div>
+                                    <div class="tbox-price" id="t-entry-price">—</div>
+                                    <div class="tbox-window" id="t-entry-window">—</div>
+                                </div>
+                                <div class="timing-box timing-exit">
+                                    <div class="tbox-label">📤 Exit By</div>
+                                    <div class="tbox-time" id="t-exit-time">—</div>
+                                    <div class="tbox-price" id="t-exit-target">—</div>
+                                    <div class="tbox-price-c" id="t-exit-conservative">—</div>
+                                </div>
+                                <div class="timing-box timing-stop">
+                                    <div class="tbox-label">🛑 Stop Loss</div>
+                                    <div class="tbox-price" id="t-stop-price">—</div>
+                                    <div class="tbox-urgency" id="t-urgency">—</div>
+                                </div>
+                            </div>
+
+                            <!-- Strategy Note -->
+                            <div class="timing-note" id="timing-note">—</div>
+
+                            <!-- Price Milestones -->
+                            <div class="timing-milestones">
+                                <div class="tm-header">📍 Projected Price Milestones</div>
+                                <div id="timing-milestones-list" class="tm-list"></div>
+                            </div>
+                        </div>
+
+                        <!-- ═══ AI COUNCIL PANEL ═══ -->
+                        <div id="council-panel" class="council-panel">
+                            <div class="council-header">
+                                <div class="council-icon">🏛️</div>
+                                <div class="council-title-block">
+                                    <div class="council-title">AI Council Vote</div>
+                                    <div class="council-sub" id="council-sub">7-Model Meta-Ensemble Consensus</div>
+                                </div>
+                                <div class="council-final" id="council-final-badge">—</div>
+                            </div>
+                            <!-- Fused probability bar -->
+                            <div class="council-fused">
+                                <div class="cf-bar">
+                                    <div class="cf-seg cf-buy"  id="cf-buy-seg"></div>
+                                    <div class="cf-seg cf-hold" id="cf-hold-seg"></div>
+                                    <div class="cf-seg cf-sell" id="cf-sell-seg"></div>
+                                </div>
+                                <div class="cf-labels">
+                                    <span class="cf-lbl buy"  id="cf-buy-lbl">BUY 0%</span>
+                                    <span class="cf-lbl hold" id="cf-hold-lbl">HOLD 0%</span>
+                                    <span class="cf-lbl sell" id="cf-sell-lbl">SELL 0%</span>
+                                </div>
+                            </div>
+                            <!-- Model vote grid -->
+                            <div id="council-grid" class="council-grid"></div>
+                        </div>
+
+                        <!-- ═══ ML ANALYSIS PANEL ═══ -->
+                        <div id="ml-panel" class="ml-panel">
+                            <div class="ml-panel-header">
+                                <span class="ml-icon">🤖</span>
+                                <div>
+                                    <div class="ml-title">ML Hybrid Engine</div>
+                                    <div class="ml-subtitle" id="ml-training-info">RandomForest · GradientBoosting · Ridge Regression</div>
+                                </div>
+                                <div id="ml-badge" class="ml-status-badge">ACTIVE</div>
+                            </div>
+
+                            <!-- Ensemble Signal Row -->
+                            <div class="ml-signal-row">
+                                <div class="ml-signal-card" id="ml-ensemble-card">
+                                    <div class="ml-card-label">Ensemble Signal</div>
+                                    <div class="ml-card-value" id="ml-ensemble-signal">—</div>
+                                    <div class="ml-card-sub" id="ml-predicted-return">Return: —</div>
+                                </div>
+                                <div class="ml-signal-card">
+                                    <div class="ml-card-label">Random Forest</div>
+                                    <div class="ml-card-value" id="ml-rf-signal">—</div>
+                                    <div class="ml-card-sub" id="ml-rf-prob">—</div>
+                                </div>
+                                <div class="ml-signal-card">
+                                    <div class="ml-card-label">Gradient Boost</div>
+                                    <div class="ml-card-value" id="ml-gb-signal">—</div>
+                                    <div class="ml-card-sub" id="ml-gb-prob">—</div>
+                                </div>
+                                <div class="ml-signal-card">
+                                    <div class="ml-card-label">Ridge Regression</div>
+                                    <div class="ml-card-value" id="ml-lr-signal">—</div>
+                                    <div class="ml-card-sub" id="ml-reg-slope">Slope: —</div>
+                                </div>
+                            </div>
+
+                            <!-- Probability Bars -->
+                            <div class="ml-prob-section">
+                                <div class="ml-prob-label-row">
+                                    <span style="color: var(--accent-green)">BUY <span id="prob-buy-val">—</span></span>
+                                    <span style="color: var(--text-secondary)">HOLD <span id="prob-hold-val">—</span></span>
+                                    <span style="color: var(--accent-red)">SELL <span id="prob-sell-val">—</span></span>
+                                </div>
+                                <div class="ml-prob-bar-track">
+                                    <div class="ml-prob-bar-buy"  id="prob-bar-buy"></div>
+                                    <div class="ml-prob-bar-hold" id="prob-bar-hold"></div>
+                                    <div class="ml-prob-bar-sell" id="prob-bar-sell"></div>
+                                </div>
+                            </div>
+
+                            <!-- Feature Importance -->
+                            <div class="ml-features-section">
+                                <div class="ml-feat-title">Top Predictive Features</div>
+                                <div id="ml-feature-list" class="ml-feature-list"></div>
                             </div>
                         </div>
 
@@ -213,6 +368,65 @@
             Algorithm generates signals based on technical indicators and does not guarantee profit.
             Trade at your own risk.
         </p>
+    </div>
+
+    <!-- ══════════════ SETTINGS MODAL ══════════════ -->
+    <div id="settings-modal" class="modal" style="display:none;">
+        <div class="modal-content settings-modal-content">
+            <div class="modal-header">
+                <div>
+                    <h2 style="font-size:1.2rem;">⚙️ AI Model Configuration</h2>
+                    <p style="color:var(--text-secondary);font-size:0.8rem;margin:4px 0 0;">
+                        Add API keys to unlock Claude Opus + Emergent AI reasoning layers
+                    </p>
+                </div>
+                <span class="close-modal" id="close-settings-btn">&times;</span>
+            </div>
+
+            <div class="settings-key-row">
+                <div class="settings-provider">
+                    <div class="sp-header">
+                        <span class="sp-icon">🤖</span>
+                        <div>
+                            <div class="sp-name">Claude Opus 4</div>
+                            <div class="sp-desc">Anthropic — Deep reasoning, highest accuracy</div>
+                        </div>
+                        <div class="sp-status" id="claude-status">●&nbsp;Not set</div>
+                    </div>
+                    <div class="sp-input-row">
+                        <input type="password" id="input-anthropic-key" placeholder="sk-ant-api03-..." class="sp-input">
+                        <button class="btn-clear-key" onclick="clearKey('anthropic')">Clear</button>
+                    </div>
+                    <div class="sp-hint">Get free key: <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a></div>
+                </div>
+
+                <div class="settings-provider">
+                    <div class="sp-header">
+                        <span class="sp-icon">⚡</span>
+                        <div>
+                            <div class="sp-name">Emergent AI (Groq / LLaMA-3)</div>
+                            <div class="sp-desc">Groq — Ultra-fast inference, free tier</div>
+                        </div>
+                        <div class="sp-status" id="groq-status">●&nbsp;Not set</div>
+                    </div>
+                    <div class="sp-input-row">
+                        <input type="password" id="input-groq-key" placeholder="gsk_..." class="sp-input">
+                        <button class="btn-clear-key" onclick="clearKey('groq')">Clear</button>
+                    </div>
+                    <div class="sp-hint">Get free key: <a href="https://console.groq.com" target="_blank">console.groq.com</a></div>
+                </div>
+            </div>
+
+            <div class="settings-footer">
+                <div id="settings-save-status" class="settings-save-status"></div>
+                <button id="btn-save-keys" class="btn-expert" style="margin-left:auto;">💾 Save Keys & Activate</button>
+            </div>
+
+            <div class="settings-info">
+                🔒 Keys are stored locally on your server only — never sent to third parties.
+                API calls go directly from your machine to Anthropic/Groq.
+            </div>
+        </div>
     </div>
 
     <script src="script.js"></script>
