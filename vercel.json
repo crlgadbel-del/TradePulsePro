@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "functions": {
+    "app.py": {
+      "excludeFiles": "{streamlit_app.py,Stock-Market_Search/create_shortcut.py,Stock-Market_Search/Install-Shortcut.ps1,Stock-Market_Search/TradeAI.bat,Stock-Market_Search/backend/ml_engine.py}"
+    }
+  }
+}
